@@ -100,12 +100,11 @@ Build instructions will land here once V1 is reproducible. For now see the OpenS
 
 CS 225A, Stanford, Spring 2026.
 
-* _name_, _role_
-* _name_, _role_
-* _name_, _role_
-* _name_, _role_
-
-Course staff: TBD.
+* Adarsh Ambati
+* Kimberly Nickerson
+* Simon Casper
+* Matthew Kim
+Course staff: Prof. Oussama Khatib, Mentor: Enzo Andreacchio
 
 ## License
 

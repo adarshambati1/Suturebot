@@ -1,0 +1,48 @@
+<redisConfiguration namespacePrefix="opensai" />
+
+<simvizConfiguration
+	worldFilePath="${WORLD_FILES_FOLDER}/world_suturebot.urdf">
+
+	<simParameters frictionCoefficient="0.5" />
+
+	<logger logFolderName="log_files/suturebot/simviz"
+		enabledAtStartup="true"
+		addTimestampToFilename="false" />
+
+	<!-- Force sensor at the flange (the gripper attachment point). -->
+	<forceSensor robotOrObjectName="Rizon4s"
+		linkName="flange"
+		filterCutoff="5.0" />
+</simvizConfiguration>
+
+<robotControlConfiguration robotName="Rizon4s"
+	robotModelFile="${ROBOT_FILES_FOLDER}/Rizon4s.urdf">
+
+	<logger logFolderName="log_files/suturebot/controllers"
+		enabledAtStartup="true"
+		addTimestampToFilename="false" />
+
+	<!-- Cartesian controller acting at the flange (the gripper). Drives the
+	     suturing choreography: approach, grip, drive, release, lift-over,
+	     regrip, pull-through. -->
+	<controller name="cartesian_controller">
+		<motionForceTask name="cartesian_task"
+			linkName="flange">
+			<velocitySaturation enabled="true" />
+			<otg type="disabled" />
+		</motionForceTask>
+
+		<jointTask name="joint_task">
+			<otg type="disabled" />
+		</jointTask>
+	</controller>
+
+	<!-- Joint controller for posing the arm (e.g., teach pose, home pose). -->
+	<controller name="joint_controller">
+		<jointTask name="joint_task">
+			<velocitySaturation enabled="true" />
+			<otg type="disabled" />
+		</jointTask>
+	</controller>
+
+</robotControlConfiguration>

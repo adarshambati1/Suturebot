@@ -1,0 +1,87 @@
+<?xml version="1.0" ?>
+
+<!-- Suturebot V1 simulation world.
+     Rizon4s with d405 camera + parallel-jaw gripper.
+     The "tissue" is a tall block flush on the floor; the gripper approaches
+     horizontally to grasp the needle, drive it toward the block, release,
+     reposition over the top, regrip, and pull away on the far side. -->
+
+<world name="suturebot_world" gravity="0.0 0.0 -9.81">
+
+	<robot name="Rizon4s">
+		<model dir="${ROBOT_FILES_FOLDER}" path="Rizon4s.urdf" name="Rizon4s" />
+		<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+	</robot>
+
+	<static_object name="Floor">
+		<origin xyz="0.0 0.0 -0.05" rpy="0 0 0" />
+		<visual>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<box size="5.0 5.0 0.1" />
+			</geometry>
+			<material name="material_floor">
+				<color rgba="0.15 0.15 0.18 1.0" />
+			</material>
+		</visual>
+		<collision>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<box size="5.0 5.0 0.1" />
+			</geometry>
+		</collision>
+	</static_object>
+
+	<!-- TissueBlock: rotated 90° around the vertical axis so the thin
+	     (puncture) dimension is along world Y instead of world X. The
+	     robot approaches from the -Y side and translates in +Y to drive
+	     the needle through — a lateral wrist motion at a fixed radial
+	     distance, which is much easier on the kinematics than reaching
+	     further out radially. Flush with the floor (bottom at z=0). -->
+	<static_object name="TissueBlock">
+		<origin xyz="0.55 0.0 0.20" rpy="0 0 1.5707963" />
+		<visual>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<box size="0.04 0.18 0.40" />
+			</geometry>
+			<material name="material_tissue">
+				<color rgba="0.95 0.78 0.72 1.0" />
+			</material>
+		</visual>
+		<collision>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<box size="0.04 0.18 0.40" />
+			</geometry>
+		</collision>
+	</static_object>
+
+	<light name="light_front" type="directional">
+		<position xyz="2.0 -2.0 2.0" />
+		<lookat xyz="0.55 0.0 0.30" />
+	</light>
+
+	<light name="light_back" type="directional">
+		<position xyz="-1.0 2.0 2.0" />
+		<lookat xyz="0.55 0.0 0.30" />
+	</light>
+
+	<!-- The Chai3D pop-up renders camera_fixed by default, so this is the
+	     side view: eye-level from world +X (in front of the block looking
+	     back toward the robot). The lateral puncture along world Y reads
+	     as a clean left-to-right sweep across the camera. -->
+	<camera name="camera_fixed">
+		<position xyz="1.3 0.0 0.30" />
+		<vertical xyz="0.0 0.0 1.0" />
+		<lookat xyz="0.55 0.0 0.30" />
+	</camera>
+
+	<!-- Alternative 3/4 perspective view. -->
+	<camera name="camera_perspective">
+		<position xyz="1.4 -0.8 0.7" />
+		<vertical xyz="0.0 0.0 1.0" />
+		<lookat xyz="0.55 0.0 0.30" />
+	</camera>
+
+</world>

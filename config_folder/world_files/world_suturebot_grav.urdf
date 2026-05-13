@@ -1,14 +1,14 @@
 <?xml version="1.0" ?>
 
-<!-- Suturebot simulation world.
-     Rizon4s arm (no gripper) + tall tissue block flush with floor.
-     The block is rotated 90° around Z so the thin (puncture) dimension
-     is along world Y. -->
+<!-- Suturebot simulation world (Grav variant).
+     Rizon4s + welded-fixed Grav gripper, foam base + foam block scene.
+     The gripper is visible on the flange but all its joints are welded
+     fixed (Sai doesn't honor URDF <mimic>). -->
 
-<world name="suturebot_world" gravity="0.0 0.0 -9.81">
+<world name="suturebot_grav_world" gravity="0.0 0.0 -9.81">
 
 	<robot name="Rizon4s">
-		<model dir="${ROBOT_FILES_FOLDER}" path="Rizon4s.urdf" name="Rizon4s" />
+		<model dir="${ROBOT_FILES_FOLDER}" path="Rizon4s_Grav_hemostat.urdf" name="Rizon4s" />
 		<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
 	</robot>
 
@@ -112,6 +112,58 @@
 			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
 			<geometry>
 				<box size="0.130 0.0057 0.0225" />
+			</geometry>
+		</collision>
+	</static_object>
+
+	<!-- World axis indicators (red X, green Y, blue Z), 10 cm each at origin. -->
+	<static_object name="WorldAxisX">
+		<origin xyz="0.05 0.0 0.0" rpy="0 1.5708 0" />
+		<visual>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<cylinder radius="0.003" length="0.10" />
+			</geometry>
+			<material name="world_axis_x"><color rgba="1.0 0.0 0.0 1.0" /></material>
+		</visual>
+		<collision>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<cylinder radius="0.003" length="0.10" />
+			</geometry>
+		</collision>
+	</static_object>
+
+	<static_object name="WorldAxisY">
+		<origin xyz="0.0 0.05 0.0" rpy="-1.5708 0 0" />
+		<visual>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<cylinder radius="0.003" length="0.10" />
+			</geometry>
+			<material name="world_axis_y"><color rgba="0.0 1.0 0.0 1.0" /></material>
+		</visual>
+		<collision>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<cylinder radius="0.003" length="0.10" />
+			</geometry>
+		</collision>
+	</static_object>
+
+	<static_object name="WorldAxisZ">
+		<origin xyz="0.0 0.0 0.05" rpy="0 0 0" />
+		<visual>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<cylinder radius="0.003" length="0.10" />
+			</geometry>
+			<material name="world_axis_z"><color rgba="0.0 0.0 1.0 1.0" /></material>
+		</visual>
+		<collision>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<cylinder radius="0.003" length="0.10" />
 			</geometry>
 		</collision>
 	</static_object>

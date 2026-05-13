@@ -1,31 +1,36 @@
 <redisConfiguration namespacePrefix="opensai" />
 
 <simvizConfiguration
-	worldFilePath="${WORLD_FILES_FOLDER}/world_suturebot.urdf">
+	worldFilePath="${WORLD_FILES_FOLDER}/world_suturebot_grav.urdf">
 
 	<simParameters frictionCoefficient="1.0"
 		collisionRestitutionCoefficient="0.1" />
 
-	<logger logFolderName="log_files/suturebot/simviz"
+	<logger logFolderName="log_files/suturebot_grav/simviz"
 		enabledAtStartup="true"
 		addTimestampToFilename="false" />
 
-	<!-- Force sensor at the flange (the gripper attachment point). -->
 	<forceSensor robotOrObjectName="Rizon4s"
 		linkName="flange"
 		filterCutoff="5.0" />
 </simvizConfiguration>
 
+<!-- getMassMatrixFromRedis=false: with the welded-fixed gripper, the
+     simulator's mass-matrix computation produced a non-SPD M (the cause
+     of the earlier "M is not symmetric positive definite" crash).
+     Forcing the controller to compute M from the model sidesteps that. -->
 <robotControlConfiguration robotName="Rizon4s"
-	robotModelFile="${ROBOT_FILES_FOLDER}/Rizon4s.urdf">
+	robotModelFile="${ROBOT_FILES_FOLDER}/Rizon4s_Grav_hemostat.urdf"
+	getMassMatrixFromRedis="false">
 
-	<logger logFolderName="log_files/suturebot/controllers"
+	<logger logFolderName="log_files/suturebot_grav/controllers"
 		enabledAtStartup="true"
 		addTimestampToFilename="false" />
 
-	<!-- Cartesian controller acting at the flange (gripper attachment).
-	     Z offset from flange to closed_fingers_tcp is ~0.20 m, so the
-	     script's flange Z = TCP Z + 0.20 when camera-down. -->
+	<!-- Cartesian task on the flange (the gripper attachment point).
+	     The Grav extends ~20 cm below the flange in flange-Z. Combined
+	     with an imagined mosquito forceps + 69.81 mm needle, the chain
+	     to the needle tip is ~30 cm below the flange. -->
 	<controller name="cartesian_controller">
 		<motionForceTask name="cartesian_task"
 			linkName="flange">
@@ -33,18 +38,11 @@
 			<otg type="disabled" />
 		</motionForceTask>
 
-		<!-- Gripper joints are welded fixed in Rizon4s_Grav_fixed.urdf
-		     (Sai doesn't honor URDF <mimic>, so the Grav's four-bar
-		     linkage can't load with active joints). To restore active
-		     gripper control, switch the robotModelFile above back to
-		     Rizon4s_Grav.urdf and re-add a gripper_fingers jointTask. -->
-
 		<jointTask name="joint_task">
 			<otg type="disabled" />
 		</jointTask>
 	</controller>
 
-	<!-- Joint controller for posing the arm (teach pose, home pose). -->
 	<controller name="joint_controller">
 		<jointTask name="joint_task">
 			<velocitySaturation enabled="true" />

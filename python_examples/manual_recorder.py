@@ -1,48 +1,72 @@
 import redis
 import time
-import json
-import csv
+import numpy as np
+import matplotlib.pyplot as plt
 
 r = redis.Redis()
 
-# adjust these key names to match your actual Redis keys
-# you can discover them with: redis-cli KEYS "*flexiv*" or KEYS "*robot*"
-JOINT_POS_KEY = "sai2::FlexivRizon::sensors::q"      # joint positions
-JOINT_TORQUE_KEY = "sai2::FlexivRizon::sensors::tau"  # joint torques
+# your actual keys
+Q_KEY   = "opensai::sensors::Titania::joint_positions"
+TAU_KEY = "opensai::sensors::Titania::joint_torques"
 
-records = []
+def read(key):
+    val = r.get(key)
+    if val is None:
+        return None
+    return [float(x) for x in val.decode().strip().split()]
 
-print("Recording... press Ctrl+C to stop")
+# ── record ──
+times, positions, torques = [], [], []
+
+print("Recording... move the robot and pierce the needle.")
+print("Press Ctrl+C to stop.\n")
+
+t0 = time.time()
 try:
     while True:
-        q = r.get(JOINT_POS_KEY)
-        tau = r.get(JOINT_TORQUE_KEY)
-        
+        q = read(Q_KEY)
+        tau = read(TAU_KEY)
         if q and tau:
-            # Redis values are typically space-separated floats
-            q_vals = [float(x) for x in q.decode().strip().split()]
-            tau_vals = [float(x) for x in tau.decode().strip().split()]
-            
-            record = {
-                "time": time.time(),
-                "joint_positions": q_vals,
-                "joint_torques": tau_vals
-            }
-            records.append(record)
-            print(f"q: {[f'{v:.4f}' for v in q_vals]}")
-        
-        time.sleep(0.01)  # 100 Hz sampling
-
+            times.append(time.time() - t0)
+            positions.append(q)
+            torques.append(tau)
+        time.sleep(0.01)  # 100 Hz
 except KeyboardInterrupt:
-    print(f"\nRecorded {len(records)} samples")
+    pass
 
-# save to CSV
-with open("recorded_trajectory.csv", "w", newline="") as f:
-    writer = csv.writer(f)
-    n_joints = len(records[0]["joint_positions"])
-    header = ["time"] + [f"q{i}" for i in range(n_joints)] + [f"tau{i}" for i in range(n_joints)]
-    writer.writerow(header)
-    for rec in records:
-        writer.writerow([rec["time"]] + rec["joint_positions"] + rec["joint_torques"])
+print(f"Recorded {len(times)} samples over {times[-1]:.1f}s")
 
-print("Saved to recorded_trajectory.csv")
+times = np.array(times)
+positions = np.array(positions)
+torques = np.array(torques)
+n_joints = positions.shape[1]
+
+# ── save raw data ──
+np.savez("needle_pierce_data.npz", times=times, positions=positions, torques=torques)
+print("Saved to needle_pierce_data.npz")
+
+# ── plot ──
+fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+
+# joint positions
+for j in range(n_joints):
+    axes[0].plot(times, np.degrees(positions[:, j]), label=f"J{j}")
+axes[0].set_ylabel("Joint Position (deg)")
+axes[0].set_title("Joint Trajectories During Needle Pierce")
+axes[0].legend(loc="upper right", ncol=n_joints)
+axes[0].grid(True, alpha=0.3)
+
+# joint torques
+for j in range(n_joints):
+    axes[1].plot(times, torques[:, j], label=f"J{j}")
+axes[1].set_ylabel("Joint Torque (Nm)")
+axes[1].set_xlabel("Time (s)")
+axes[1].set_title("Joint Torques — Look for Spike at Needle Insertion")
+axes[1].legend(loc="upper right", ncol=n_joints)
+axes[1].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig("needle_pierce_plot.png", dpi=150)
+plt.show()
+
+print("Saved plot to needle_pierce_plot.png")

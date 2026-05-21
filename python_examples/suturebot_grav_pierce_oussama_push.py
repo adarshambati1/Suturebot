@@ -73,6 +73,8 @@ class RedisKeys:
     cartesian_task_sensed_force: str = (
         f"opensai::controllers::{ROBOT_NAME}::cartesian_controller::cartesian_task::sensed_force"
     )
+    ft_sensor_tcp_force: str  = f"opensai::sensors::{ROBOT_NAME}::ft_sensor::tcp::force"
+    ft_sensor_tcp_moment: str = f"opensai::sensors::{ROBOT_NAME}::ft_sensor::tcp::moment"
     active_controller: str = f"opensai::controllers::{ROBOT_NAME}::active_controller_name"
     config_file_name: str  = "::sai-interfaces-webui::config_file_name"
 
@@ -120,34 +122,44 @@ DWELL       = 0.5
 
 
 class ForceLogger(threading.Thread):
-    """Background poller for sensed_force. Stores (t, [Fx,Fy,Fz]) samples
-    and state-transition markers; saves .npz + .png on stop."""
+    """Background poller for one or more 3-vector Redis keys. Stores time-
+    aligned samples and state-transition markers; saves .npz + .png."""
 
-    def __init__(self, redis_client: redis.Redis, key: str, sample_hz: int = 100):
+    def __init__(self, redis_client: redis.Redis, keys: dict, sample_hz: int = 100):
+        """keys is a dict mapping label -> redis key (e.g.
+        {"tcp_force": "opensai::sensors::...::ft_sensor::tcp::force", ...})"""
         super().__init__(daemon=True)
         self._redis = redis_client
-        self._key = key
+        self._keys = keys
         self._period = 1.0 / sample_hz
         self._stop = threading.Event()
         self._t0 = None
         self.times = []
-        self.forces = []
-        self.markers = []   # list of (t, state_name)
+        self.series = {label: [] for label in keys}   # label -> list of [x,y,z]
+        self.markers = []                              # list of (t, state_name)
 
     def start(self):
         self._t0 = time.monotonic()
         super().start()
 
     def run(self):
+        nan_vec = [float("nan")] * 3
         while not self._stop.is_set():
-            raw = self._redis.get(self._key)
-            if raw is not None:
+            t = time.monotonic() - self._t0
+            row = {}
+            for label, key in self._keys.items():
+                raw = self._redis.get(key)
+                if raw is None:
+                    row[label] = nan_vec
+                    continue
                 try:
-                    f = json.loads(raw.decode("utf-8"))
-                    self.times.append(time.monotonic() - self._t0)
-                    self.forces.append(f)
+                    v = json.loads(raw.decode("utf-8"))
+                    row[label] = v if isinstance(v, list) and len(v) == 3 else nan_vec
                 except (ValueError, TypeError):
-                    pass
+                    row[label] = nan_vec
+            self.times.append(t)
+            for label, v in row.items():
+                self.series[label].append(v)
             time.sleep(self._period)
 
     def mark(self, state_name: str):
@@ -163,11 +175,12 @@ class ForceLogger(threading.Thread):
         npz_path = os.path.join(out_dir, f"{tag}.npz")
         png_path = os.path.join(out_dir, f"{tag}.png")
         t = np.array(self.times)
-        f = np.array(self.forces) if self.forces else np.zeros((0, 3))
+        arrays = {label: (np.array(vals) if vals else np.zeros((0, 3)))
+                  for label, vals in self.series.items()}
         mt = np.array([m[0] for m in self.markers], dtype=float)
         ml = np.array([m[1] for m in self.markers], dtype=object)
-        np.savez(npz_path, t=t, forces=f, markers_t=mt, markers_label=ml)
-        print(f"  saved {npz_path}  ({len(t)} samples)")
+        np.savez(npz_path, t=t, markers_t=mt, markers_label=ml, **arrays)
+        print(f"  saved {npz_path}  ({len(t)} samples, {len(self._keys)} series)")
 
         try:
             import matplotlib.pyplot as plt
@@ -175,23 +188,30 @@ class ForceLogger(threading.Thread):
             print("  matplotlib not installed; skipping .png")
             return
 
-        fig, ax = plt.subplots(figsize=(12, 5))
-        if len(t) > 0:
-            ax.plot(t, f[:, 0], label="Fx", color="C0", linewidth=1)
-            ax.plot(t, f[:, 1], label="Fy", color="C1", linewidth=1)
-            ax.plot(t, f[:, 2], label="Fz", color="C2", linewidth=1)
-            ax.plot(t, np.linalg.norm(f, axis=1), label="|F|",
-                    color="k", linewidth=0.8, alpha=0.5)
-        ymin, ymax = (ax.get_ylim() if len(t) > 0 else (-1, 1))
-        for mt_i, ml_i in self.markers:
-            ax.axvline(mt_i, color="gray", linestyle="--", alpha=0.4, linewidth=0.5)
-            ax.text(mt_i, ymax, str(ml_i), rotation=90, fontsize=7,
-                    va="top", ha="right", alpha=0.7)
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Force (N, world frame)")
-        ax.set_title(f"Sensed flange forces - {tag}")
-        ax.legend(loc="upper right", fontsize=8)
-        ax.grid(True, alpha=0.3)
+        labels = list(self._keys.keys())
+        n = len(labels)
+        fig, axes = plt.subplots(n, 1, figsize=(12, 3.0 * n), sharex=True)
+        if n == 1:
+            axes = [axes]
+        for ax, label in zip(axes, labels):
+            data = arrays[label]
+            unit = "N·m" if "moment" in label else "N"
+            if len(t) > 0 and data.shape[0] == len(t):
+                ax.plot(t, data[:, 0], label=f"{label}_x", color="C0", linewidth=1)
+                ax.plot(t, data[:, 1], label=f"{label}_y", color="C1", linewidth=1)
+                ax.plot(t, data[:, 2], label=f"{label}_z", color="C2", linewidth=1)
+                mag = np.linalg.norm(np.nan_to_num(data), axis=1)
+                ax.plot(t, mag, label=f"|{label}|", color="k", linewidth=0.8, alpha=0.4)
+            ymin, ymax = ax.get_ylim()
+            for mt_i, ml_i in self.markers:
+                ax.axvline(mt_i, color="gray", linestyle="--", alpha=0.4, linewidth=0.5)
+                ax.text(mt_i, ymax, str(ml_i), rotation=90, fontsize=7,
+                        va="top", ha="right", alpha=0.6)
+            ax.set_ylabel(f"{label} ({unit})")
+            ax.legend(loc="upper right", fontsize=8)
+            ax.grid(True, alpha=0.3)
+        axes[-1].set_xlabel("Time (s)")
+        axes[0].set_title(f"Force / moment traces - {tag}")
         fig.tight_layout()
         fig.savefig(png_path, dpi=120)
         plt.close(fig)
@@ -278,10 +298,16 @@ def main() -> None:
     print(f"WORKING_Z={WORKING_Z:.4f}, X_HOME={X_HOME:.4f}, X_FLUSH_LEFT={X_FLUSH_LEFT:.4f}")
 
     if args.plot_forces:
-        _FORCE_LOGGER = ForceLogger(redis_client, REDIS_KEYS.cartesian_task_sensed_force,
-                                    sample_hz=FORCE_SAMPLE_HZ)
+        keys = {
+            "tcp_force":    REDIS_KEYS.ft_sensor_tcp_force,
+            "tcp_moment":   REDIS_KEYS.ft_sensor_tcp_moment,
+            "sensed_force": REDIS_KEYS.cartesian_task_sensed_force,
+        }
+        _FORCE_LOGGER = ForceLogger(redis_client, keys, sample_hz=FORCE_SAMPLE_HZ)
         _FORCE_LOGGER.start()
-        print(f"[force logger] sampling {REDIS_KEYS.cartesian_task_sensed_force} at {FORCE_SAMPLE_HZ} Hz")
+        print(f"[force logger] sampling {len(keys)} keys at {FORCE_SAMPLE_HZ} Hz:")
+        for label, key in keys.items():
+            print(f"  {label:14s} {key}")
 
     try:
         first_fy = FLANGE_Y[0]

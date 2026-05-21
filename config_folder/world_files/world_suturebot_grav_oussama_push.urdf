@@ -43,7 +43,7 @@
 	     floor. Moved outward from the original (0.55, 0) so the clamp
 	     at home sits 66 cm from the base. -->
 	<static_object name="FoamBaseSlab">
-		<origin xyz="0.738 0.0 0.004" rpy="0 0 0" />
+		<origin xyz="0.738 0.1 0.004" rpy="0 0 0" />
 		<visual>
 			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
 			<geometry>
@@ -62,7 +62,7 @@
 	</static_object>
 
 	<static_object name="FoamBaseWallLeft">
-		<origin xyz="0.74335 0.0 0.0155" rpy="0 0 0" />
+		<origin xyz="0.74335 0.1 0.0155" rpy="0 0 0" />
 		<visual>
 			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
 			<geometry>
@@ -81,7 +81,7 @@
 	</static_object>
 
 	<static_object name="FoamBaseWallRight">
-		<origin xyz="0.73265 0.0 0.0155" rpy="0 0 0" />
+		<origin xyz="0.73265 0.1 0.0155" rpy="0 0 0" />
 		<visual>
 			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
 			<geometry>
@@ -104,7 +104,7 @@
 	     top extends 7.5 mm above the wall tops (walls top at z=0.023,
 	     foam top at z=0.0305). -->
 	<static_object name="FoamBlock">
-		<origin xyz="0.738 0.0 0.01925" rpy="0 0 0" />
+		<origin xyz="0.738 0.1 0.01925" rpy="0 0 0" />
 		<visual>
 			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
 			<geometry>
@@ -176,12 +176,12 @@
 
 	<light name="light_front" type="directional">
 		<position xyz="2.0 -2.0 2.0" />
-		<lookat xyz="0.738 0.0 0.04" />
+		<lookat xyz="0.738 0.1 0.04" />
 	</light>
 
 	<light name="light_back" type="directional">
 		<position xyz="-1.0 2.0 2.0" />
-		<lookat xyz="0.738 0.0 0.04" />
+		<lookat xyz="0.738 0.1 0.04" />
 	</light>
 
 	<!-- Side view from world +Y looking back at the foam. The X-axis
@@ -189,7 +189,7 @@
 	<camera name="camera_fixed">
 		<position xyz="0.738 1.0 0.15" />
 		<vertical xyz="0.0 0.0 1.0" />
-		<lookat xyz="0.738 0.0 0.04" />
+		<lookat xyz="0.738 0.1 0.04" />
 	</camera>
 
 </world>

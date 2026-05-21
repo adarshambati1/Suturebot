@@ -85,7 +85,7 @@ NEEDLE_Z       =  0.027
 HOME_GAP        = 0.075
 APPROACH_BUFFER = 0.005    # jaws stop 5 mm shy of foam -X face
 
-NEEDLE_Y_STITCHES = [+0.05, +0.10, +0.15]
+NEEDLE_Y_STITCHES = [+0.15, +0.20, +0.25]
 FLANGE_Y = [ny - NEEDLE_TIP_OFFSET[1] for ny in NEEDLE_Y_STITCHES]
 
 WORKING_Z = NEEDLE_Z - NEEDLE_TIP_OFFSET[2]

@@ -32,6 +32,15 @@ import numpy as np
 import redis
 
 
+# Toggle: "Rizon4s" for sim, "Titania" for the real Flexiv driver.
+ROBOT_NAME = "Rizon4s"
+
+# Matching xml config that OpenSai_main must be running.
+CONFIG_FILE_FOR_THIS_SCRIPT = (
+    "suturebot_grav_real.xml" if ROBOT_NAME == "Titania" else "suturebot_grav_oussama_push.xml"
+)
+
+
 class State(Enum):
     GOTO_HOME       = auto()
     HOLD_AT_HEIGHT  = auto()
@@ -43,23 +52,22 @@ class State(Enum):
 @dataclass
 class RedisKeys:
     cartesian_task_goal_position: str = (
-        "opensai::controllers::Rizon4s::cartesian_controller::cartesian_task::goal_position"
+        f"opensai::controllers::{ROBOT_NAME}::cartesian_controller::cartesian_task::goal_position"
     )
     cartesian_task_goal_orientation: str = (
-        "opensai::controllers::Rizon4s::cartesian_controller::cartesian_task::goal_orientation"
+        f"opensai::controllers::{ROBOT_NAME}::cartesian_controller::cartesian_task::goal_orientation"
     )
     cartesian_task_current_position: str = (
-        "opensai::controllers::Rizon4s::cartesian_controller::cartesian_task::current_position"
+        f"opensai::controllers::{ROBOT_NAME}::cartesian_controller::cartesian_task::current_position"
     )
     cartesian_task_current_orientation: str = (
-        "opensai::controllers::Rizon4s::cartesian_controller::cartesian_task::current_orientation"
+        f"opensai::controllers::{ROBOT_NAME}::cartesian_controller::cartesian_task::current_orientation"
     )
-    active_controller: str = "opensai::controllers::Rizon4s::active_controller_name"
+    active_controller: str = f"opensai::controllers::{ROBOT_NAME}::active_controller_name"
     config_file_name: str  = "::sai-interfaces-webui::config_file_name"
 
 
 REDIS_KEYS = RedisKeys()
-CONFIG_FILE_FOR_THIS_SCRIPT = "suturebot_grav_oussama_push.xml"
 CONTROLLER_TO_USE = "cartesian_controller"
 
 # Old offsets (from suturebot_grav_pierce.py) rotated by R_z(-90°):

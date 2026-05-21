@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Archives
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Build artifacts
+build/
+*.o
+*.so
+
+# OpenSai runtime
+log_files/

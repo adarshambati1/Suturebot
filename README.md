@@ -84,17 +84,34 @@ We are building on OpenSai, the Stanford robotics simulation and control framewo
 
 **Perception.** A wrist-mounted RGB camera plus a static overhead camera, with classical CV for needle tip localization in V1. Anything more elaborate (learned needle pose estimation in the spirit of STITCH 2.0) is a V2 stretch goal.
 
-**Repo layout** (in flux):
+**Repo layout**:
 
 ```
-project_starter/   OpenSai starter code and example controllers
-hardware/          end-effector CAD and BOM (TBD)
-src/               suturing controller and perception (TBD)
+config_folder/
+  xml_config_files/   OpenSai launch configs (suturebot*.xml)
+  world_files/        scene URDFs (world_suturebot*.urdf)
+  robot_files/        Rizon4s + Grav URDF, mesh tree (rizon4s/), surgery clamp STL
+python_examples/      trajectory clients (pierce, stitch, motion sequences)
+scripts/              setup helpers (setup_sim.sh)
+reference/            archived material — not used at runtime
+  project_starter/    CS 225A starter code (Panda/OptiTrack examples)
+  flexiv_archive/     unused Flexiv URDFs / meshes
+RUN_SIMULATION.md     how to run the sim end-to-end
 ```
 
 ## Getting started
 
-Build instructions will land here once V1 is reproducible. For now see the OpenSai project at [manips-sai-org/OpenSai](https://github.com/manips-sai-org/OpenSai) for setup of the simulation and control stack.
+See [RUN_SIMULATION.md](RUN_SIMULATION.md) for sim setup and launch. The short version:
+
+```bash
+./scripts/setup_sim.sh    # one-time, assumes OpenSai at ../OpenSai
+cd ../OpenSai
+sh scripts/launch.sh config_folder/xml_config_files/suturebot_grav.xml
+# in another terminal:
+python3 python_examples/suturebot_grav_pierce.py
+```
+
+OpenSai itself lives at [manips-sai-org/OpenSai](https://github.com/manips-sai-org/OpenSai).
 
 ## Team
 

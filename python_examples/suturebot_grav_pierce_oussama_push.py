@@ -90,7 +90,7 @@ NEEDLE_TIP_OFFSET = np.array([+0.0613, +0.0015, -0.2826])
 FOAM_CENTER_X  =  0.738
 FOAM_NEG_X     = FOAM_CENTER_X - 0.00285
 FOAM_POS_X     = FOAM_CENTER_X + 0.00285
-NEEDLE_Z       =  0.027
+NEEDLE_Z       =  0.032
 
 HOME_GAP        = 0.075
 APPROACH_BUFFER = 0.005    # jaws stop 5 mm shy of foam -X face

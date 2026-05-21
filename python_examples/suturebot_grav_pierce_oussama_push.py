@@ -23,7 +23,10 @@ State sequence:
    5. (loop to next stitch y via TRANSIT_Y)
 """
 
+import argparse
 import json
+import os
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -34,6 +37,10 @@ import redis
 
 # Toggle: "Rizon4s" for sim, "Titania" for the real Flexiv driver.
 ROBOT_NAME = "Rizon4s"
+
+# Force logging is opt-in via --pf / --plot-forces on the CLI.
+FORCE_LOG_DIR   = "log_files/force_logs"
+FORCE_SAMPLE_HZ = 100
 
 # Matching xml config that OpenSai_main must be running.
 CONFIG_FILE_FOR_THIS_SCRIPT = (
@@ -62,6 +69,9 @@ class RedisKeys:
     )
     cartesian_task_current_orientation: str = (
         f"opensai::controllers::{ROBOT_NAME}::cartesian_controller::cartesian_task::current_orientation"
+    )
+    cartesian_task_sensed_force: str = (
+        f"opensai::controllers::{ROBOT_NAME}::cartesian_controller::cartesian_task::sensed_force"
     )
     active_controller: str = f"opensai::controllers::{ROBOT_NAME}::active_controller_name"
     config_file_name: str  = "::sai-interfaces-webui::config_file_name"
@@ -109,6 +119,89 @@ HEIGHT_HOLD = 2.0
 DWELL       = 0.5
 
 
+class ForceLogger(threading.Thread):
+    """Background poller for sensed_force. Stores (t, [Fx,Fy,Fz]) samples
+    and state-transition markers; saves .npz + .png on stop."""
+
+    def __init__(self, redis_client: redis.Redis, key: str, sample_hz: int = 100):
+        super().__init__(daemon=True)
+        self._redis = redis_client
+        self._key = key
+        self._period = 1.0 / sample_hz
+        self._stop = threading.Event()
+        self._t0 = None
+        self.times = []
+        self.forces = []
+        self.markers = []   # list of (t, state_name)
+
+    def start(self):
+        self._t0 = time.monotonic()
+        super().start()
+
+    def run(self):
+        while not self._stop.is_set():
+            raw = self._redis.get(self._key)
+            if raw is not None:
+                try:
+                    f = json.loads(raw.decode("utf-8"))
+                    self.times.append(time.monotonic() - self._t0)
+                    self.forces.append(f)
+                except (ValueError, TypeError):
+                    pass
+            time.sleep(self._period)
+
+    def mark(self, state_name: str):
+        if self._t0 is not None:
+            self.markers.append((time.monotonic() - self._t0, state_name))
+
+    def stop(self):
+        self._stop.set()
+        self.join(timeout=1.0)
+
+    def save(self, out_dir: str, tag: str):
+        os.makedirs(out_dir, exist_ok=True)
+        npz_path = os.path.join(out_dir, f"{tag}.npz")
+        png_path = os.path.join(out_dir, f"{tag}.png")
+        t = np.array(self.times)
+        f = np.array(self.forces) if self.forces else np.zeros((0, 3))
+        mt = np.array([m[0] for m in self.markers], dtype=float)
+        ml = np.array([m[1] for m in self.markers], dtype=object)
+        np.savez(npz_path, t=t, forces=f, markers_t=mt, markers_label=ml)
+        print(f"  saved {npz_path}  ({len(t)} samples)")
+
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            print("  matplotlib not installed; skipping .png")
+            return
+
+        fig, ax = plt.subplots(figsize=(12, 5))
+        if len(t) > 0:
+            ax.plot(t, f[:, 0], label="Fx", color="C0", linewidth=1)
+            ax.plot(t, f[:, 1], label="Fy", color="C1", linewidth=1)
+            ax.plot(t, f[:, 2], label="Fz", color="C2", linewidth=1)
+            ax.plot(t, np.linalg.norm(f, axis=1), label="|F|",
+                    color="k", linewidth=0.8, alpha=0.5)
+        ymin, ymax = (ax.get_ylim() if len(t) > 0 else (-1, 1))
+        for mt_i, ml_i in self.markers:
+            ax.axvline(mt_i, color="gray", linestyle="--", alpha=0.4, linewidth=0.5)
+            ax.text(mt_i, ymax, str(ml_i), rotation=90, fontsize=7,
+                    va="top", ha="right", alpha=0.7)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Force (N, world frame)")
+        ax.set_title(f"Sensed flange forces - {tag}")
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(png_path, dpi=120)
+        plt.close(fig)
+        print(f"  saved {png_path}")
+
+
+# Module-level handle so step() can mark state transitions.
+_FORCE_LOGGER: "ForceLogger | None" = None
+
+
 def set_goal(redis_client: redis.Redis, pos: np.ndarray, ori: np.ndarray) -> None:
     redis_client.set(REDIS_KEYS.cartesian_task_goal_position, json.dumps(pos.tolist()))
     redis_client.set(REDIS_KEYS.cartesian_task_goal_orientation, json.dumps(ori.tolist()))
@@ -135,6 +228,8 @@ def compute_world_from_flange(flange_pos: np.ndarray, flange_ori: np.ndarray,
 def step(redis_client: redis.Redis, state: State, pos: np.ndarray, dwell: float, msg: str) -> None:
     print(f"[{state.name:<16}] {msg}")
     print(f"  cmd  flange = ({pos[0]:+.4f}, {pos[1]:+.4f}, {pos[2]:+.4f})")
+    if _FORCE_LOGGER is not None:
+        _FORCE_LOGGER.mark(state.name)
     set_goal(redis_client, pos, ORI)
     time.sleep(dwell)
     actual_pos, actual_ori = read_actual_pose(redis_client)
@@ -163,6 +258,13 @@ def run_pierce(redis_client: redis.Redis, fy: float, ny: float, idx: int) -> Non
 
 
 def main() -> None:
+    global _FORCE_LOGGER
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pf", "--plot-forces", dest="plot_forces", action="store_true",
+                        help="Log sensed force during the run and save .npz + .png")
+    args = parser.parse_args()
+
     redis_client = redis.Redis()
 
     config_file_name = redis_client.get(REDIS_KEYS.config_file_name)
@@ -175,20 +277,32 @@ def main() -> None:
 
     print(f"WORKING_Z={WORKING_Z:.4f}, X_HOME={X_HOME:.4f}, X_FLUSH_LEFT={X_FLUSH_LEFT:.4f}")
 
-    first_fy = FLANGE_Y[0]
-    home = np.array([X_HOME, first_fy, HOME_Z])
-    step(redis_client, State.GOTO_HOME, home, MOVE_TIME, "going to home")
-    step(redis_client, State.HOLD_AT_HEIGHT, home, HEIGHT_HOLD, "holding at home")
+    if args.plot_forces:
+        _FORCE_LOGGER = ForceLogger(redis_client, REDIS_KEYS.cartesian_task_sensed_force,
+                                    sample_hz=FORCE_SAMPLE_HZ)
+        _FORCE_LOGGER.start()
+        print(f"[force logger] sampling {REDIS_KEYS.cartesian_task_sensed_force} at {FORCE_SAMPLE_HZ} Hz")
 
-    for i, (fy, ny) in enumerate(zip(FLANGE_Y, NEEDLE_Y_STITCHES)):
-        run_pierce(redis_client, fy, ny, i)
-        if i + 1 < len(FLANGE_Y):
-            next_fy = FLANGE_Y[i + 1]
-            step(redis_client, State.TRANSIT_Y,
-                 np.array([X_HOME, next_fy, WORKING_Z]), MOVE_TIME,
-                 f"transit to next stitch at needle y={NEEDLE_Y_STITCHES[i + 1]:+.2f}")
+    try:
+        first_fy = FLANGE_Y[0]
+        home = np.array([X_HOME, first_fy, HOME_Z])
+        step(redis_client, State.GOTO_HOME, home, MOVE_TIME, "going to home")
+        step(redis_client, State.HOLD_AT_HEIGHT, home, HEIGHT_HOLD, "holding at home")
 
-    print("\n[DONE] All pierces complete.")
+        for i, (fy, ny) in enumerate(zip(FLANGE_Y, NEEDLE_Y_STITCHES)):
+            run_pierce(redis_client, fy, ny, i)
+            if i + 1 < len(FLANGE_Y):
+                next_fy = FLANGE_Y[i + 1]
+                step(redis_client, State.TRANSIT_Y,
+                     np.array([X_HOME, next_fy, WORKING_Z]), MOVE_TIME,
+                     f"transit to next stitch at needle y={NEEDLE_Y_STITCHES[i + 1]:+.2f}")
+
+        print("\n[DONE] All pierces complete.")
+    finally:
+        if _FORCE_LOGGER is not None:
+            _FORCE_LOGGER.stop()
+            tag = f"oussama_push_{time.strftime('%Y%m%d_%H%M%S')}"
+            _FORCE_LOGGER.save(FORCE_LOG_DIR, tag)
 
 
 if __name__ == "__main__":

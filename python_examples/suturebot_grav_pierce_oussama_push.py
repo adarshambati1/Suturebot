@@ -132,7 +132,7 @@ class ForceLogger(threading.Thread):
         self._redis = redis_client
         self._keys = keys
         self._period = 1.0 / sample_hz
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self._t0 = None
         self.times = []
         self.series = {label: [] for label in keys}   # label -> list of [x,y,z]
@@ -144,7 +144,7 @@ class ForceLogger(threading.Thread):
 
     def run(self):
         nan_vec = [float("nan")] * 3
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             t = time.monotonic() - self._t0
             row = {}
             for label, key in self._keys.items():
@@ -167,7 +167,7 @@ class ForceLogger(threading.Thread):
             self.markers.append((time.monotonic() - self._t0, state_name))
 
     def stop(self):
-        self._stop.set()
+        self._stop_event.set()
         self.join(timeout=1.0)
 
     def save(self, out_dir: str, tag: str):

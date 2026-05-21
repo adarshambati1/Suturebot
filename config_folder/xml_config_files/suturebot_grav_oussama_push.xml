@@ -1,0 +1,59 @@
+<redisConfiguration namespacePrefix="opensai" />
+
+<simvizConfiguration
+	worldFilePath="${WORLD_FILES_FOLDER}/world_suturebot_grav_oussama_push.urdf">
+
+	<simParameters frictionCoefficient="1.0"
+		collisionRestitutionCoefficient="0.1" />
+
+	<logger logFolderName="log_files/suturebot_grav_oussama_push/simviz"
+		enabledAtStartup="true"
+		addTimestampToFilename="false" />
+
+	<forceSensor robotOrObjectName="Rizon4s"
+		linkName="flange"
+		filterCutoff="5.0" />
+</simvizConfiguration>
+
+<!-- getMassMatrixFromRedis=false: with the welded-fixed gripper, the
+     simulator's mass-matrix computation produced a non-SPD M (the cause
+     of the earlier "M is not symmetric positive definite" crash).
+     Forcing the controller to compute M from the model sidesteps that. -->
+<robotControlConfiguration robotName="Rizon4s"
+	robotModelFile="${ROBOT_FILES_FOLDER}/Rizon4s_Grav_hemostat.urdf"
+	getMassMatrixFromRedis="false">
+
+	<logger logFolderName="log_files/suturebot_grav_oussama_push/controllers"
+		enabledAtStartup="true"
+		addTimestampToFilename="false" />
+
+	<controller name="cartesian_controller">
+		<motionForceTask name="cartesian_task"
+			linkName="flange">
+			<velocitySaturation enabled="false" />
+
+			<otg type="acceleration"
+				maxLinearVelocity="0.1"
+				maxAngularVelocity="1.0"
+				maxLinearAcceleration="1.5"
+				maxLinearJerk="5.0"
+				maxAngularAcceleration="3.0"
+				maxAngularJerk="100"/>
+
+			<positionGains kp="400.0" kv="40.0" />
+			<orientationGains kp="400.0" kv="40.0" />
+		</motionForceTask>
+
+		<jointTask name="joint_task">
+			<otg type="disabled" />
+		</jointTask>
+	</controller>
+
+	<controller name="joint_controller">
+		<jointTask name="joint_task">
+			<velocitySaturation enabled="true" />
+			<otg type="disabled" />
+		</jointTask>
+	</controller>
+
+</robotControlConfiguration>

@@ -31,17 +31,31 @@
 	     The Grav extends ~20 cm below the flange in flange-Z. Combined
 	     with an imagined mosquito forceps + 69.81 mm needle, the chain
 	     to the needle tip is ~30 cm below the flange. -->
-	<controller name="cartesian_controller">
-		<motionForceTask name="cartesian_task"
-			linkName="flange">
-			<velocitySaturation enabled="true" />
-			<otg type="disabled" />
-		</motionForceTask>
+    <controller name="cartesian_controller">
+       <motionForceTask name="cartesian_task"
+           linkName="flange">
+           <velocitySaturation enabled="false"
+               linearVelocityLimit="0.1"
+               angularVelocityLimit="0.5" />
 
-		<jointTask name="joint_task">
-			<otg type="disabled" />
-		</jointTask>
-	</controller>
+
+           <otg type="acceleration"
+               maxLinearVelocity="0.1"
+               maxAngularVelocity="1.0"
+               maxLinearAcceleration="1.5"
+               maxLinearJerk="5.0"
+               maxAngularAcceleration="3.0"
+               maxAngularJerk="100"/>
+              
+           <positionGains kp="400.0" kv="40.0" />
+           <orientationGains kp="400.0" kv="40.0" />
+       </motionForceTask>
+
+
+       <jointTask name="joint_task">
+           <otg type="disabled" />
+       </jointTask>
+   </controller>
 
 	<controller name="joint_controller">
 		<jointTask name="joint_task">

@@ -19,3 +19,27 @@ build/
 
 # OpenSai runtime
 log_files/
+
+# Unity (vr_teleop/SuturebotVR — created locally by Unity Hub)
+vr_teleop/SuturebotVR/Library/
+vr_teleop/SuturebotVR/Temp/
+vr_teleop/SuturebotVR/Obj/
+vr_teleop/SuturebotVR/Logs/
+vr_teleop/SuturebotVR/UserSettings/
+vr_teleop/SuturebotVR/MemoryCaptures/
+vr_teleop/SuturebotVR/Build/
+vr_teleop/SuturebotVR/Builds/
+vr_teleop/SuturebotVR/*.csproj
+vr_teleop/SuturebotVR/*.sln
+vr_teleop/SuturebotVR/*.slnx
+vr_teleop/SuturebotVR/*.unityproj
+vr_teleop/SuturebotVR/*.suo
+vr_teleop/SuturebotVR/*.user
+vr_teleop/SuturebotVR/*.userprefs
+vr_teleop/SuturebotVR/*.pidb
+vr_teleop/SuturebotVR/*.booproj
+vr_teleop/SuturebotVR/*.svd
+vr_teleop/SuturebotVR/*.pdb
+vr_teleop/SuturebotVR/*.mdb
+vr_teleop/SuturebotVR/*.opendb
+vr_teleop/SuturebotVR/*.VC.db

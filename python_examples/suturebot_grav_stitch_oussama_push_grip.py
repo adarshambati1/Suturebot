@@ -377,17 +377,17 @@ def main() -> None:
           f"X_FLUSH_LEFT={X_FLUSH_LEFT:.4f}, X_FLUSH_RIGHT={X_FLUSH_RIGHT:.4f}, "
           f"X_AWAY={X_AWAY:.4f}")
 
-    first_fx = FLANGE_Y[0]
-    home = np.array([first_fx, X_HOME, HOME_Z])
+    first_fy = FLANGE_Y[0]
+    home = np.array([first_fy, X_HOME, HOME_Z])
     step(redis_client, State.GOTO_HOME, home, MOVE_TIME,
          "going to home")
     step(redis_client, State.HOLD_AT_HEIGHT, home, HEIGHT_HOLD,
          "holding at home height")
 
-    for i, (fx, nx) in enumerate(zip(X_HOME, NEEDLE_Y_STITCHES)):
-        run_stitch(redis_client, fx, nx, i)
-        if i + 1 < len(X_HOME):
-            transit_to_next(redis_client, fx, X_HOME[i + 1], NEEDLE_Y_STITCHES[i + 1])
+    for i, (fy, ny) in enumerate(zip(FLANGE_Y, NEEDLE_Y_STITCHES)):
+        run_stitch(redis_client, fy, ny, i)
+        if i + 1 < len(FLANGE_Y):
+            transit_to_next(redis_client, fy, FLANGE_Y[i + 1], NEEDLE_Y_STITCHES[i + 1])
 
     print("\n[DONE] All stitches complete. Holding final pose.")
 

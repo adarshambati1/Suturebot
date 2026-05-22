@@ -73,8 +73,8 @@ class RedisKeys:
     cartesian_task_sensed_force: str = (
         f"opensai::controllers::{ROBOT_NAME}::cartesian_controller::cartesian_task::sensed_force"
     )
-    ft_sensor_tcp_force: str  = f"opensai::sensors::{ROBOT_NAME}::ft_sensor::tcp::force"
-    ft_sensor_tcp_moment: str = f"opensai::sensors::{ROBOT_NAME}::ft_sensor::tcp::moment"
+    ft_sensor_tcp_force: str  = f"opensai::sensors::{ROBOT_NAME}::ft_sensor::tcp_force"
+    ft_sensor_tcp_moment: str = f"opensai::sensors::{ROBOT_NAME}::ft_sensor::tcp_moment"
     active_controller: str = f"opensai::controllers::{ROBOT_NAME}::active_controller_name"
     config_file_name: str  = "::sai-interfaces-webui::config_file_name"
 

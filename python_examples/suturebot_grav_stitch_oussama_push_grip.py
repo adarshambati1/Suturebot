@@ -102,23 +102,25 @@ CONTROLLER_TO_USE = "cartesian_controller"
 JAWS_OFFSET       = np.array([-0.0085, +0.0015, -0.2826])
 NEEDLE_TIP_OFFSET = np.array([+0.0613, +0.0015, -0.2826])
 
+
+FOAM_THICKNESS = 0.0057   # in X direction
 FOAM_CENTER_X  =  0.738
-FOAM_NEG_X     = FOAM_CENTER_X - 0.00285
-FOAM_POS_X     = FOAM_CENTER_X + 0.00285
-NEEDLE_Z       =  0.032
+FOAM_NEG_X     = FOAM_CENTER_X - FOAM_THICKNESS / 2 #Jaws approach this side
+FOAM_POS_X     = FOAM_CENTER_X + FOAM_THICKNESS / 2 #Needle pulled out from this side
+NEEDLE_Z       =  0.018
 
 
 APPROACH_BUFFER = 0.012   # jaws stop 5 mm shy of foam -X face
 # --- Distances from spec --------------------------------------------------
-HOME_GAP        = 0.055         # needle tip 75 mm from foam -Y face
-PUNCTURE_INIT   = 0.008          # initial puncture motion (8 mm in +Y)
-MOVE_AWAY_DIST  = 0.030          # post-stitch pull away (15 mm in +Y)
+HOME_GAP        = 0.055         # needle tip 75 mm from foam -x face
+PUNCTURE_INIT   = 0.008          # initial puncture motion (8 mm in +x)
+MOVE_AWAY_DIST  = 0.030          # post-stitch pull away (30 mm in +x)
 LIFT_RISE       = 0.05           # extra Z to clear foam during regrip / crossover
 
 
 
 
-NEEDLE_Y_STITCHES = [+0.15, +0.20, +0.25]
+NEEDLE_Y_STITCHES = [+0.15, +0.20, +0.25, +0.30]
 FLANGE_Y = [ny - NEEDLE_TIP_OFFSET[1] for ny in NEEDLE_Y_STITCHES]
 
 WORKING_Z = NEEDLE_Z - NEEDLE_TIP_OFFSET[2]
@@ -137,7 +139,7 @@ X_HOME        = flange_x_for_jaws(FOAM_NEG_X - HOME_GAP)
 X_FLUSH_LEFT  = flange_x_for_jaws(FOAM_NEG_X - APPROACH_BUFFER)
 X_INITIAL_PIERCE  = X_HOME + PUNCTURE_INIT
 LEFT_DESCEND_BUFFER  = 0.005
-RIGHT_DESCEND_BUFFER = 0.02
+RIGHT_DESCEND_BUFFER = 0.01
 X_FLUSH_LEFT      = flange_x_for_jaws(FOAM_NEG_X - LEFT_DESCEND_BUFFER)
 X_FLUSH_RIGHT     = flange_x_for_jaws(FOAM_POS_X) + RIGHT_DESCEND_BUFFER
 X_AWAY            = X_FLUSH_RIGHT + MOVE_AWAY_DIST
@@ -311,23 +313,59 @@ def step(redis_client: redis.Redis, state: State, pos: np.ndarray, dwell: float,
 
 def run_stitch(redis_client: redis.Redis, fy: float, nx: float, idx: int) -> None:
     print(f"\n=== Stitch {idx + 1} at needle x = {nx:.2f} ===")
+   
 
-    step(redis_client, State.INITIAL_PUNCTURE,
+    if idx != 0:
+        # If not the first stitch, we will regrip
+        
+        #lift up 
+        step(redis_client, State.INITIAL_PUNCTURE,
+         np.array([X_INITIAL_PIERCE+0.045, fy, WORKING_Z]), SHORT_MOVE,
+         "initial 8 mm puncture")
+        time.sleep(DWELL)
+
+        set_gripper_mode(redis_client, "o")
+        time.sleep(2)
+
+        step(redis_client, State.LIFT_OVER,
+         np.array([X_INITIAL_PIERCE+0.045, fy, LIFT_Z]), SHORT_MOVE,
+         "lift over foam")
+         
+        #move back
+        step(redis_client, State.REGRIP_LIFT,
+            np.array([X_INITIAL_PIERCE+0.045-0.030,fy, LIFT_Z]), SHORT_MOVE,
+            "regrip — lift up")
+        time.sleep(DWELL)
+
+        #move down
+        step(redis_client, State.REGRIP_DESCEND,
+            np.array([X_INITIAL_PIERCE+0.045-0.030, fy, WORKING_Z]), SHORT_MOVE,
+            "regrip — descend to working z")
+        time.sleep(DWELL)
+
+        set_gripper_mode(redis_client, "g")
+        time.sleep(2)
+
+        #step(redis_client, State.REGRIP_BACK,
+            #np.array([X_HOME, fy, LIFT_Z]), MOVE_TIME,
+            #"regrip — back to home y at lift height (end of needle)")
+        #time.sleep(DWELL)
+
+        #step(redis_client, State.REGRIP_DESCEND,
+            #np.array([X_HOME, fy,WORKING_Z]), SHORT_MOVE,
+            #"regrip — descend to working z")
+        #time.sleep(DWELL)
+
+        #set_gripper_mode(redis_client, "g")
+        #time.sleep(2)
+
+    else:
+
+        step(redis_client, State.INITIAL_PUNCTURE,
          np.array([X_INITIAL_PIERCE, fy, WORKING_Z]), SHORT_MOVE,
          "initial 8 mm puncture")
-    time.sleep(DWELL)
-
-    #step(redis_client, State.REGRIP_LIFT,
-    #     np.array([fy, X_INITIAL_PIERCE, LIFT_Z]), SHORT_MOVE,
-    #     "regrip — lift up")
-    #step(redis_client, State.REGRIP_BACK,
-    #     np.array([fy, X_HOME, LIFT_Z]), MOVE_TIME,
-    #     "regrip — back to home y at lift height (end of needle)")
-    #step(redis_client, State.REGRIP_DESCEND,
-    #     np.array([fy, X_HOME, WORKING_Z]), SHORT_MOVE,
-    #     "regrip — descend to working z")
-    #time.sleep(DWELL)
-    
+        time.sleep(DWELL)
+        
 
     step(redis_client, State.FULL_PUNCTURE,
          np.array([X_FLUSH_LEFT, fy, WORKING_Z]), MOVE_TIME,
@@ -346,8 +384,10 @@ def run_stitch(redis_client: redis.Redis, fy: float, nx: float, idx: int) -> Non
          np.array([X_FLUSH_RIGHT, fy, WORKING_Z]), SHORT_MOVE,
          "descend on +Y side — forceps flush with +Y face")
     time.sleep(DWELL)
+
     set_gripper_mode(redis_client, "g")
     time.sleep(2)
+
     step(redis_client, State.MOVE_AWAY,
          np.array([X_AWAY, fy, WORKING_Z]), SHORT_MOVE,
          "move 15 mm away from foam")

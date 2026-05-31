@@ -23,15 +23,20 @@ import redis
 ROBOT = "Rizon4s"
 
 # grasp seating: needle body (arc center) relative to the flange.
-# 28 cm down the tool axis = the Grav jaws; Rx(-90) makes the arc plane vertical.
-# dialed in: gripped 1/3 from the swage, needle ~perpendicular to the driver
-# with a slight slant. Arc plane near-vertical, ready to be driven.
-GRASP_POS = np.array([-0.00222, 0.00774, 0.28081])
+# Home flange orientation: tool-down rolled -35 deg. This SLANT pulls the wrist
+# off the J6=0 singularity (J6 ~39 deg instead of ~3 deg), giving roll room for
+# the bite drive. GRASP recomputed for this slant so the needle keeps the
+# dialed-in look (gripped 1/3 from the swage).
+ORI = np.array([[1.0, 0.0, 0.0],
+                [0.0, -0.81915, -0.57358],
+                [0.0, 0.57358, -0.81915]])
+GRASP_POS = np.array([0.00778, 0.00587, 0.28510])
 GRASP_R = np.array([[0.0, -1.0, 0.0],
-                    [-0.99452, 0.0, 0.10453],
-                    [-0.10453, 0.0, -0.99452]])
-ORI = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
-READY = np.array([0.45, -0.30, 0.42])
+                    [-0.75471, 0.0, 0.65606],
+                    [-0.65606, 0.0, -0.75471]])
+# flange pose that puts the needle grip over the slit (0.45,-0.30,0.25) given
+# the slant; J6 stays ~23 deg, clear of the singularity.
+READY = np.array([0.45, -0.139, 0.479])
 
 # wall-lean start pose for the needle body (against the support wall, ~X=0.50).
 WALL_POS = np.array([0.492, -0.30, 0.038])

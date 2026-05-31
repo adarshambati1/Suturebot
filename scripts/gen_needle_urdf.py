@@ -37,7 +37,7 @@ N_VIS   = 9            # visual arc segments
 TUBE_R  = 0.0008       # wire radius (m), visual
 COL_W   = 0.0024       # collision box cross-section (m); a bit fatter than the wire for stable contact
 MASS    = 0.050        # kg (heavier than a real needle; light bodies jitter on contact in sim)
-ORIGIN  = (0.45, -0.20, 0.10)   # initial body-frame (arc-center) pose; pinned by the FSM later
+ORIGIN  = (0.45, -0.30, 0.10)   # initial body-frame (arc-center) pose; pinned by the FSM later
 RPY     = (0.0, 0.0, 0.0)
 
 STEEL = ("needle_steel", "0.75 0.78 0.82 1.0")

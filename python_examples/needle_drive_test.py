@@ -27,8 +27,14 @@ ARC     = np.radians(135.0)           # 3/8 circle
 TIP_LOCAL = np.array([R_CURV * np.cos(ARC), R_CURV * np.sin(ARC), 0.0])
 
 # --- drive geometry (tune) ---
-PIVOT   = np.array([0.45, -0.20, 0.030])   # arc center in world during the drive
-SWEEP   = (np.radians(-60.0), np.radians(120.0))   # local-Z rotation range
+# PIVOT at the pad surface so the needle's circle (radius R) crosses the surface
+# on both sides of the slit; sweeping through the bottom gives enter -> dip ->
+# emerge. With this seating the tip world angle is (135 deg + phi), so phi in
+# (45, 225) takes the tip from one surface crossing, through the bottom, to the
+# other.
+PIVOT   = np.array([0.45, -0.20, 0.0254])  # arc center at the pad surface
+SWEEP   = (np.radians(45.0), np.radians(225.0))    # clean enter->emerge bite
+SAFE    = np.array([0.45, -0.20, 0.40])    # parked flange pose (arm stays put)
 N_STEPS = 90
 STEP_DT = 0.05
 
@@ -38,7 +44,7 @@ R_SEAT = np.array([[1.0, 0.0, 0.0],
                    [0.0, 1.0, 0.0]])
 
 # grasp seating (needle body relative to flange), same as the grip test.
-GRASP_POS = np.array([0.0, 0.0, 0.10])
+GRASP_POS = np.array([0.0, 0.0, 0.20])   # ~20 cm down the tool axis = the Grav jaws
 
 K = {
     "goal_pos": f"opensai::controllers::{ROBOT}::cartesian_controller::cartesian_task::goal_position",

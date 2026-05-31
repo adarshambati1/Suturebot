@@ -27,8 +27,8 @@ CONFIG_FILE = "suture_pad.xml"
 # --- grasp seating: needle BODY frame (arc center) relative to the flange ---
 # The needle hangs below the flange (flange +Z points down with the tool-down
 # ORI), arc-center ~10 cm below. GRASP_RPY clocks the arc plane -- tune it.
-GRASP_POS = np.array([0.0, 0.0, 0.10])
-GRASP_RPY = np.array([0.0, 0.0, 0.0])
+GRASP_POS = np.array([0.0, 0.0, 0.28])   # ~28 cm down the tool axis = the Grav jaws
+GRASP_RPY = np.array([-np.pi / 2, 0.0, 0.0])   # arc plane vertical (perpendicular driving clocking)
 
 # Tool-down flange orientation (matches the other suturebot clients).
 ORI = np.array([[1.0, 0.0, 0.0],

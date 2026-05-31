@@ -238,61 +238,11 @@
     <!-- Collision removed: hemostat is a visual indicator only; it
          shouldn't physically collide with the foam scene. -->
 
-    <!-- Imaginary 69.81 mm needle, reference only. Cylinder extends from
-         the hemostat jaws in link +X (the puncture direction in this
-         orientation). Radius 1 mm; centerpoint at the body centerline +
-         half-needle in X. -->
-    <!-- Needle midpoint = jaws_x + half_needle in link +X. -->
-    <visual name="needle">
-      <origin rpy="0 1.5708 0" xyz="0.0229 0.065 0.0966"/>
-      <geometry>
-        <cylinder radius="0.001" length="0.0698"/>
-      </geometry>
-      <material name="needle_steel">
-        <color rgba="0.85 0.85 0.9 1.0"/>
-      </material>
-    </visual>
+    <!-- (Removed the old imaginary straight needle + red jaws-tip debug ball.
+         The real needle is now the curved 'Needle' dynamic_object in the world,
+         held via the kinematic-pin grasp transform -- not baked into the arm.) -->
 
-    <!-- DEBUG: red ball at the STL-derived jaws-tip vertex (max-X in
-         STL, after scale + visual rotation + visual offset). -->
-    <visual name="jaws_marker">
-      <origin rpy="0 0 0" xyz="-0.0120 0.065 0.0966"/>
-      <geometry>
-        <sphere radius="0.003"/>
-      </geometry>
-      <material name="jaws_marker_red">
-        <color rgba="1.0 0.0 0.0 1.0"/>
-      </material>
-    </visual>
-
-    <!-- Frame debug indicators (link X red, Y green, Z blue). 5 cm each. -->
-    <visual name="axis_x">
-      <origin rpy="0 1.5708 0" xyz="0.025 0 0"/>
-      <geometry>
-        <cylinder radius="0.0025" length="0.05"/>
-      </geometry>
-      <material name="axis_red">
-        <color rgba="1.0 0.0 0.0 1.0"/>
-      </material>
-    </visual>
-    <visual name="axis_y">
-      <origin rpy="-1.5708 0 0" xyz="0 0.025 0"/>
-      <geometry>
-        <cylinder radius="0.0025" length="0.05"/>
-      </geometry>
-      <material name="axis_green">
-        <color rgba="0.0 1.0 0.0 1.0"/>
-      </material>
-    </visual>
-    <visual name="axis_z">
-      <origin rpy="0 0 0" xyz="0 0 0.025"/>
-      <geometry>
-        <cylinder radius="0.0025" length="0.05"/>
-      </geometry>
-      <material name="axis_blue">
-        <color rgba="0.0 0.0 1.0 1.0"/>
-      </material>
-    </visual>
+    <!-- (Removed the link X/Y/Z debug axis indicators -- visual clutter.) -->
   </link>
 
   <!-- JOINTS -->

@@ -28,6 +28,26 @@ echo "Suturebot: $SUTUREBOT_ROOT"
 echo "OpenSai:   $OPENSAI"
 echo
 
+# --- Apply the OpenSai grasp patch (object pose/kinematic commands over redis) --
+# Adds commands::<obj>::pose + ::kinematic to the simviz interface so a client
+# can pin a dynamic object to the gripper (grip) or release it (drop). Idempotent.
+PATCH="$SUTUREBOT_ROOT/scripts/opensai_patch.diff"
+SAI_IF="$OPENSAI/core/sai-interfaces"
+if [ -f "$PATCH" ] && [ -d "$SAI_IF/.git" ]; then
+    if git -C "$SAI_IF" apply --reverse --check "$PATCH" >/dev/null 2>&1; then
+        echo "OpenSai grasp patch: already applied."
+    elif git -C "$SAI_IF" apply --check "$PATCH" >/dev/null 2>&1; then
+        git -C "$SAI_IF" apply "$PATCH"
+        echo "OpenSai grasp patch: APPLIED. You must rebuild OpenSai:"
+        echo "  (cd \"$SAI_IF/build\" && make -j4) && (cd \"$OPENSAI/build\" && make -j4)"
+    else
+        echo "WARNING: opensai_patch.diff does not apply cleanly to $SAI_IF; skipping." >&2
+    fi
+else
+    echo "Note: skipping grasp patch (no patch file or $SAI_IF is not a git repo)."
+fi
+echo
+
 link_into() {
     local src="$1"
     local dst_dir="$2"

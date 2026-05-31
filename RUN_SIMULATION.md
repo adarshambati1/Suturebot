@@ -6,7 +6,7 @@ This repo contains the scene (URDFs), OpenSai config (XMLs), and trajectory clie
 
 1. **OpenSai** built and runnable: a binary at `<OpenSai>/bin/OpenSai_main` and `<OpenSai>/scripts/launch.sh`. See [manips-sai-org/OpenSai](https://github.com/manips-sai-org/OpenSai).
 2. **redis-server**, **tmux** on your PATH (macOS: `brew install redis tmux`).
-3. **Python deps**: `pip install redis numpy`.
+3. **Python deps**: `pip install redis numpy` (add `matplotlib` for `--pf` force plots). Install them into the **same interpreter** you run the clients with — on macOS a Homebrew `python3` works; a base conda `python3` often lacks `redis`. Check with `python3 -c "import redis, numpy"`.
 
 ## One-time setup
 
@@ -21,6 +21,12 @@ OPENSAI=/path/to/your/OpenSai ./scripts/setup_sim.sh
 ```
 
 It's idempotent — re-run any time you add a new world URDF or XML config.
+
+`setup_sim.sh` also applies **`scripts/opensai_patch.diff`** to `<OpenSai>/core/sai-interfaces` — a small patch that lets a client pin and release dynamic objects over Redis (the needle-grasp model; see [The grasp patch](#the-grasp-patch-free-needle)). The apply is idempotent (it skips if already applied). **After a fresh apply you must rebuild OpenSai**, because a core library changed:
+
+```bash
+(cd ../OpenSai/core/sai-interfaces/build && make -j4) && (cd ../OpenSai/build && make -j4)
+```
 
 ## Run a simulation
 
@@ -49,8 +55,27 @@ The script connects to Redis, verifies OpenSai is running with the expected XML,
 | `suturebot_grav.xml` | `world_suturebot_grav.urdf` | +Y | `suturebot_grav_motion.py`, `suturebot_grav_stitch.py`, `suturebot_grav_pierce.py` |
 | `suturebot_grav_negY.xml` | `world_suturebot_grav_negY.urdf` | −Y | `suturebot_grav_pierce_negY.py` |
 | `suturebot_grav_oussama_push.xml` | `world_suturebot_grav_oussama_push.urdf` | +X (outward) | `suturebot_grav_pierce_oussama_push.py` |
+| `pin_test.xml` | `world_pin_test.urdf` | n/a (grasp-patch self-test) | `pin_test.py` |
 
 Each Python client declares the XML it expects in `CONFIG_FILE_FOR_THIS_SCRIPT` and refuses to run against the wrong one.
+
+## The grasp patch (free needle)
+
+The robot has no actuated gripper in sim (the URDF fingers are welded; SAI doesn't honor URDF `<mimic>`), and vanilla OpenSai can't command an object's pose over Redis at runtime. To model a needle that the arm **grips, carries, and drops**, `scripts/opensai_patch.diff` adds two Redis receive keys per dynamic object to the simviz interface:
+
+| Key | Format | Meaning |
+|---|---|---|
+| `opensai::commands::<obj>::pose` | JSON 4×4 row-major transform | where to pin the object |
+| `opensai::commands::<obj>::kinematic` | `"1"` / `"0"` | `1` = pin to commanded pose each sim step (gripped, follows the hand); `0` = normal dynamics (released → falls) |
+
+The resulting pose is published as usual at `opensai::sensors::<obj>::object_pose` (JSON 4×4). A gripped needle is `kinematic=1` with `pose` driven off the flange; releasing it is a single write of `kinematic=0`.
+
+**Verify it** (one-shot self-test — pins a box, drives it up, releases it, watches it fall):
+
+```bash
+cd ../OpenSai && sh scripts/launch.sh config_folder/xml_config_files/pin_test.xml
+python3 python_examples/pin_test.py     # expect HOLD / DRIVE / RELEASE all PASS
+```
 
 ## Sim vs real
 

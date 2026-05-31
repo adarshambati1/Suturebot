@@ -1,0 +1,71 @@
+<?xml version="1.0" ?>
+
+<!-- Pin-test world for the OpenSai grasp patch.
+     Rizon4s + floor + one free dynamic box (TestBox). The box is what
+     python_examples/pin_test.py pins / drives / releases to verify the
+     commands::<obj>::pose + ::kinematic patch. -->
+
+<world name="pin_test_world" gravity="0.0 0.0 -9.81">
+
+	<robot name="Rizon4s">
+		<model dir="${ROBOT_FILES_FOLDER}" path="Rizon4s_Grav_hemostat.urdf" name="Rizon4s" />
+		<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+	</robot>
+
+	<static_object name="Floor">
+		<origin xyz="0.0 0.0 -0.05" rpy="0 0 0" />
+		<visual>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<box size="5.0 5.0 0.1" />
+			</geometry>
+			<material name="material_floor">
+				<color rgba="0.15 0.15 0.18 1.0" />
+			</material>
+		</visual>
+		<collision>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<box size="5.0 5.0 0.1" />
+			</geometry>
+		</collision>
+	</static_object>
+
+	<!-- Free dynamic body, off to the side and clear of the robot, so a
+	     release drops it straight to the floor. -->
+	<dynamic_object name="TestBox">
+		<origin xyz="0.4 0.3 0.5" rpy="0 0 0" />
+		<inertial>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<mass value="0.05" />
+			<inertia ixx="1e-5" iyy="1e-5" izz="1e-5" ixy="0" ixz="0" iyz="0" />
+		</inertial>
+		<visual>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<box size="0.04 0.04 0.04" />
+			</geometry>
+			<material name="material_testbox">
+				<color rgba="0.9 0.3 0.1 1.0" />
+			</material>
+		</visual>
+		<collision>
+			<origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+			<geometry>
+				<box size="0.04 0.04 0.04" />
+			</geometry>
+		</collision>
+	</dynamic_object>
+
+	<light name="light_front" type="directional">
+		<position xyz="2.0 -2.0 2.0" />
+		<lookat xyz="0.4 0.3 0.2" />
+	</light>
+
+	<camera name="camera_fixed">
+		<position xyz="1.5 0.3 0.6" />
+		<vertical xyz="0.0 0.0 1.0" />
+		<lookat xyz="0.4 0.3 0.3" />
+	</camera>
+
+</world>

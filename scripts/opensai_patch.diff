@@ -1,0 +1,70 @@
+diff --git a/src/simviz/SimVizRedisInterface.cpp b/src/simviz/SimVizRedisInterface.cpp
+index 267f767..66d4fc1 100644
+--- a/src/simviz/SimVizRedisInterface.cpp
++++ b/src/simviz/SimVizRedisInterface.cpp
+@@ -89,6 +89,8 @@ void SimVizRedisInterface::resetInternal() {
+ 	_robot_M.clear();
+ 	_object_pose.clear();
+ 	_object_vel.clear();
++	_object_cmd_pose.clear();
++	_object_kinematic.clear();
+ 	_force_sensor_data.clear();
+ 
+ 	_model_specific_params_string.clear();
+@@ -234,6 +236,18 @@ void SimVizRedisInterface::resetInternal() {
+ 				"sensors::" + object_name + "::object_velocity",
+ 				_object_vel.at(object_name), group_name);
+ 
++			// Suturebot grasp model: receive a commanded pose + kinematic
++			// flag so a client can pin this object to the gripper (grip) or
++			// release it to dynamics (let it fall). Defaults to dynamics.
++			_object_cmd_pose[object_name] = _object_pose.at(object_name);
++			_object_kinematic[object_name] = 0;
++			_redis_client->addToReceiveGroup(
++				"commands::" + object_name + "::pose",
++				_object_cmd_pose.at(object_name), group_name);
++			_redis_client->addToReceiveGroup(
++				"commands::" + object_name + "::kinematic",
++				_object_kinematic.at(object_name), group_name);
++
+ 			_graphics->addUIForceInteraction(object_name);
+ 			_object_ui_torques[object_name] = Eigen::VectorXd::Zero(6);
+ 
+@@ -476,6 +490,20 @@ void SimVizRedisInterface::simLoopRun(
+ 					object_name, _object_ui_torques.at(object_name));
+ 			}
+ 
++			// Suturebot grasp model: pin kinematic objects to their commanded
++			// pose (gripped needle follows the hand). Released objects (flag 0)
++			// fall through to normal dynamics below.
++			for (auto& object_name : _simulation->getObjectNames()) {
++				if (_object_kinematic.at(object_name) != 0) {
++					Eigen::Affine3d pinned;
++					pinned.matrix() = _object_cmd_pose.at(object_name);
++					_simulation->setObjectPose(object_name, pinned);
++					_simulation->setObjectVelocity(object_name,
++												   Eigen::Vector3d::Zero(),
++												   Eigen::Vector3d::Zero());
++				}
++			}
++
+ 			_simulation->integrate();
+ 
+ 			for (auto& robot_name : _simulation->getRobotNames()) {
+diff --git a/src/simviz/SimVizRedisInterface.h b/src/simviz/SimVizRedisInterface.h
+index 788ce45..331905f 100644
+--- a/src/simviz/SimVizRedisInterface.h
++++ b/src/simviz/SimVizRedisInterface.h
+@@ -117,6 +117,12 @@ private:
+ 	std::map<std::string, Eigen::Matrix4d> _object_pose;
+ 	std::map<std::string, Eigen::Vector6d> _object_vel;
+ 
++	// Suturebot grasp model: redis-commanded object pose + kinematic toggle.
++	// When kinematic != 0, the object is pinned to _object_cmd_pose each step
++	// (models a gripped needle following the hand); 0 -> normal dynamics.
++	std::map<std::string, Eigen::Matrix4d> _object_cmd_pose;
++	std::map<std::string, int> _object_kinematic;
++
+ 	std::vector<SaiModel::ForceSensorData> _force_sensor_data;
+ 
+ 	std::map<std::string, std::unique_ptr<SaiCommon::Logger>> _loggers;

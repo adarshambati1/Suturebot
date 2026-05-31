@@ -1,6 +1,6 @@
 # Suturebot
 
-Single-arm autonomous surgical suturing with a Franka FR3 and a static 3D-printed end-effector. CS 225A final project, Stanford Spring 2026.
+Single-arm autonomous surgical suturing with a Flexiv Rizon 4s and a static 3D-printed end-effector. CS 225A final project, Stanford Spring 2026.
 
 ## Motivation
 
@@ -22,24 +22,17 @@ The novelty here is not the algorithms. It is the constraint. Single arm, no act
 
 ## System overview
 
-The platform is one Franka FR3 with a custom static end-effector mounted at the flange. The needle is pre-loaded into the holder before the run. The arm carries the needle through the stitch trajectory and uses its 7 DOF to handle the orientation changes that a fixed gripper cannot.
+The platform is one Flexiv Rizon 4s with a custom static end-effector mounted at the flange. The needle is pre-loaded into the holder before the run. The arm carries the needle through the stitch trajectory and uses its 7 DOF to handle the orientation changes that a fixed gripper cannot.
 
-![Franka Research 3](https://franka.de/hubfs/_Frank%20Robotics4386_resized-1.jpg)
-
-*Franka Research 3. Image: Franka Robotics ([franka.de](https://franka.de/franka-research-3)).*
-
-FR3 specs that matter for this project:
+Rizon 4s specs that matter for this project:
 
 | Property | Value |
 |---|---|
 | DOF | 7 |
-| Reach | 855 mm |
-| Payload | 3 kg |
 | Joint torque sensing | yes, all 7 joints |
-| Pose repeatability | ±0.1 mm |
-| Max TCP speed | ~1 m/s |
+| Reach / payload / repeatability / speed | see the Flexiv Rizon 4s datasheet (figures TBD) |
 
-The torque sensors at every joint are the part we care about most. Suturing involves contact with deformable tissue, and we need to detect insertion forces and back off when the needle catches or hits something it shouldn't. The 855 mm reach is comfortable for a tabletop suturing setup. The 3 kg payload is more than enough for the printed end-effector and a needle.
+The torque sensors at every joint are the part we care about most — they are why we chose the Rizon 4s (the force-sensing variant) over a position-only arm. Suturing involves contact with deformable tissue, and we need to detect insertion forces and back off when the needle catches or hits something it shouldn't. The reach is comfortable for a tabletop suturing setup, and the payload is far more than the printed end-effector and a needle need.
 
 ## Phased approach
 
@@ -80,7 +73,9 @@ We are building on OpenSai, the Stanford robotics simulation and control framewo
 * **SaiSimulation.** Physics simulator. Everything gets developed and shaken out in sim before it touches the real arm. The foam epidermis is modeled as a deformable contact and the needle is a rigid body fixed in the end-effector frame.
 * **SaiGraphics.** Visualizer for the simulation. Used for debugging trajectories and for the demo video.
 
-**Sim-to-real.** The controller talks to both the simulator and the real FR3 over the same Redis interface OpenSai uses for hardware. Once the primitive sequence works in sim we swap the simulation backend for the FR3 driver and retune.
+**Sim-to-real.** The controller talks to both the simulator and the real Rizon 4s over the same Redis interface OpenSai uses for hardware. Once the primitive sequence works in sim we swap the simulation backend for the Flexiv driver and retune.
+
+**Needle-grasp model in sim.** OpenSai's sim has no actuated gripper (the URDF fingers are welded; SAI ignores URDF `<mimic>`) and can't normally command an object's pose at runtime, so `scripts/opensai_patch.diff` adds per-object `commands::<obj>::pose` + `::kinematic` Redis keys: a gripped needle is pinned to the flange each sim step, a released one falls under gravity. This is what lets sim model grip / carry / drop / re-grasp — the core of the running-stitch suturing FSM. See [RUN_SIMULATION.md](RUN_SIMULATION.md#the-grasp-patch-free-needle).
 
 **Perception.** A wrist-mounted RGB camera plus a static overhead camera, with classical CV for needle tip localization in V1. Anything more elaborate (learned needle pose estimation in the spirit of STITCH 2.0) is a V2 stretch goal.
 
@@ -91,8 +86,8 @@ config_folder/
   xml_config_files/   OpenSai launch configs (suturebot*.xml)
   world_files/        scene URDFs (world_suturebot*.urdf)
   robot_files/        Rizon4s + Grav URDF, mesh tree (rizon4s/), surgery clamp STL
-python_examples/      trajectory clients (pierce, stitch, motion sequences)
-scripts/              setup helpers (setup_sim.sh)
+python_examples/      trajectory clients (pierce, stitch, motion) + pin_test.py (grasp-patch self-test)
+scripts/              setup helpers (setup_sim.sh) + opensai_patch.diff (the grasp patch)
 reference/            archived material — not used at runtime
   project_starter/    CS 225A starter code (Panda/OptiTrack examples)
   flexiv_archive/     unused Flexiv URDFs / meshes
@@ -104,7 +99,8 @@ RUN_SIMULATION.md     how to run the sim end-to-end
 See [RUN_SIMULATION.md](RUN_SIMULATION.md) for sim setup and launch. The short version:
 
 ```bash
-./scripts/setup_sim.sh    # one-time, assumes OpenSai at ../OpenSai
+./scripts/setup_sim.sh    # one-time; assumes OpenSai at ../OpenSai. Also applies the
+                          # grasp patch — rebuild OpenSai after first apply (see RUN_SIMULATION.md)
 cd ../OpenSai
 sh scripts/launch.sh config_folder/xml_config_files/suturebot_grav.xml
 # in another terminal:

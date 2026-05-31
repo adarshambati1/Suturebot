@@ -35,7 +35,6 @@ import tty
 import numpy as np
 import redis
 
-ROBOT = "Rizon4s"           # "Titania" on the real robot
 N_JOINTS = 7
 
 # needle grasp (sim): when the gripper closes, pin the needle to the flange here
@@ -43,19 +42,21 @@ GRASP_POS = np.array([-0.00072, 0.00438, 0.28769])
 GRASP_R = np.array([[0.0, -1.0, 0.0],
                     [-0.75471, 0.0, 0.65606],
                     [-0.65606, 0.0, -0.75471]])
-
-K = {
-    "gp": f"opensai::controllers::{ROBOT}::cartesian_controller::cartesian_task::goal_position",
-    "go": f"opensai::controllers::{ROBOT}::cartesian_controller::cartesian_task::goal_orientation",
-    "cp": f"opensai::controllers::{ROBOT}::cartesian_controller::cartesian_task::current_position",
-    "co": f"opensai::controllers::{ROBOT}::cartesian_controller::cartesian_task::current_orientation",
-    "ac": f"opensai::controllers::{ROBOT}::active_controller_name",
-    "q":  f"opensai::sensors::{ROBOT}::joint_positions",
-    "grip_mode": f"opensai::commands::{ROBOT}::gripper::mode",      # consumed by the real driver
-    "npose": "opensai::commands::Needle::pose",                    # sim needle pin
-    "nkin":  "opensai::commands::Needle::kinematic",
-}
 DEMO_DIR = "log_files/demos"
+
+
+def keys(robot):
+    return {
+        "gp": f"opensai::controllers::{robot}::cartesian_controller::cartesian_task::goal_position",
+        "go": f"opensai::controllers::{robot}::cartesian_controller::cartesian_task::goal_orientation",
+        "cp": f"opensai::controllers::{robot}::cartesian_controller::cartesian_task::current_position",
+        "co": f"opensai::controllers::{robot}::cartesian_controller::cartesian_task::current_orientation",
+        "ac": f"opensai::controllers::{robot}::active_controller_name",
+        "q":  f"opensai::sensors::{robot}::joint_positions",
+        "grip_mode": f"opensai::commands::{robot}::gripper::mode",   # consumed by the real driver
+        "npose": "opensai::commands::Needle::pose",                  # sim needle pin (no-op on hw)
+        "nkin":  "opensai::commands::Needle::kinematic",
+    }
 
 
 def Rx(a): return np.array([[1,0,0],[0,np.cos(a),-np.sin(a)],[0,np.sin(a),np.cos(a)]])
@@ -80,8 +81,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--record-only", action="store_true",
                     help="don't jog; just record while you hand-guide (real robot free-drive)")
+    ap.add_argument("--robot", default="Rizon4s", help='"Titania" on the real robot')
     args = ap.parse_args()
     jog = not args.record_only
+    K = keys(args.robot)
 
     r = redis.Redis()
     if not sys.stdin.isatty():
@@ -154,7 +157,7 @@ def main():
     os.makedirs(DEMO_DIR, exist_ok=True)
     n = len(glob.glob(os.path.join(DEMO_DIR, "demo_*.npz"))) + 1
     path = os.path.join(DEMO_DIR, f"demo_{n}.npz")
-    np.savez(path, times=np.array(times), q=np.array(qs), gripper=np.array(gripper), robot=ROBOT)
+    np.savez(path, times=np.array(times), q=np.array(qs), gripper=np.array(gripper), robot=args.robot)
     print(f"saved {len(qs)} samples over {times[-1]:.1f}s -> {path}")
 
 

@@ -21,21 +21,23 @@ import time
 import numpy as np
 import redis
 
-ROBOT = "Rizon4s"
 GRASP_POS = np.array([-0.00072, 0.00438, 0.28769])
 GRASP_R = np.array([[0.0, -1.0, 0.0],
                     [-0.75471, 0.0, 0.65606],
                     [-0.65606, 0.0, -0.75471]])
-K = {
-    "ac":   f"opensai::controllers::{ROBOT}::active_controller_name",
-    "jgoal":f"opensai::controllers::{ROBOT}::joint_controller::joint_task::goal_position",
-    "cp":   f"opensai::controllers::{ROBOT}::cartesian_controller::cartesian_task::current_position",
-    "co":   f"opensai::controllers::{ROBOT}::cartesian_controller::cartesian_task::current_orientation",
-    "qsens":f"opensai::sensors::{ROBOT}::joint_positions",
-    "grip_mode": f"opensai::commands::{ROBOT}::gripper::mode",
-    "npose": "opensai::commands::Needle::pose",
-    "nkin":  "opensai::commands::Needle::kinematic",
-}
+
+
+def keys(robot):
+    return {
+        "ac":   f"opensai::controllers::{robot}::active_controller_name",
+        "jgoal":f"opensai::controllers::{robot}::joint_controller::joint_task::goal_position",
+        "cp":   f"opensai::controllers::{robot}::cartesian_controller::cartesian_task::current_position",
+        "co":   f"opensai::controllers::{robot}::cartesian_controller::cartesian_task::current_orientation",
+        "qsens":f"opensai::sensors::{robot}::joint_positions",
+        "grip_mode": f"opensai::commands::{robot}::gripper::mode",
+        "npose": "opensai::commands::Needle::pose",
+        "nkin":  "opensai::commands::Needle::kinematic",
+    }
 
 
 def trim_pauses(t, q, g, move_eps=np.radians(0.5)):
@@ -60,11 +62,14 @@ def main():
     ap.add_argument("demo")
     ap.add_argument("--speed", type=float, default=1.0)
     ap.add_argument("--raw", action="store_true", help="replay raw (no smoothing)")
+    ap.add_argument("--robot", default=None, help='override; defaults to the robot the demo was recorded on')
     args = ap.parse_args()
 
     d = np.load(args.demo, allow_pickle=True)
     t, q, g = d["times"], d["q"], d["gripper"]
-    print(f"loaded {len(q)} samples, {t[-1]:.1f}s, {q.shape[1]} joints")
+    robot = args.robot or (str(d["robot"]) if "robot" in d.files else "Rizon4s")
+    K = keys(robot)
+    print(f"loaded {len(q)} samples, {t[-1]:.1f}s, {q.shape[1]} joints, robot={robot}")
 
     if not args.raw:
         t, q, g = trim_pauses(t, q, g)

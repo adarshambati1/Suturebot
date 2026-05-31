@@ -36,10 +36,10 @@ READY = np.array([0.45, -0.30, 0.42])
 
 # dialed in: gripped 1/3 from the swage, needle ~perpendicular to the driver
 # with a slight slant. (Nudger 0 resets here.)
-GRASP_POS = np.array([-0.00222, 0.00774, 0.28081])
+GRASP_POS = np.array([-0.00072, 0.00438, 0.28769])
 GRASP_R = np.array([[0.0, -1.0, 0.0],
-                    [-0.99452, 0.0, 0.10453],
-                    [-0.10453, 0.0, -0.99452]])
+                    [-0.75471, 0.0, 0.65606],
+                    [-0.65606, 0.0, -0.75471]])
 
 K = {
     "gp": f"opensai::controllers::{ROBOT}::cartesian_controller::cartesian_task::goal_position",

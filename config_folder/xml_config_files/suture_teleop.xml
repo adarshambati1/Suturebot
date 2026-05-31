@@ -1,0 +1,58 @@
+<redisConfiguration namespacePrefix="opensai" />
+
+<!-- Teleop / record-and-playback config for the suture scene.
+     - cartesian_controller: used by teleop_record.py to jog the end-effector.
+     - joint_controller: used by playback_smooth.py to replay a recorded joint
+       trajectory directly (no IK, so no singularity surprises on replay).
+     Same scene as suture_pad.xml (pad + slit + support wall + needle). -->
+
+<simvizConfiguration
+	worldFilePath="${WORLD_FILES_FOLDER}/world_suture_pad.urdf">
+
+	<simParameters frictionCoefficient="1.0"
+		collisionRestitutionCoefficient="0.0" />
+
+	<logger logFolderName="log_files/suture_teleop/simviz"
+		enabledAtStartup="false"
+		addTimestampToFilename="false" />
+
+	<forceSensor robotOrObjectName="Rizon4s"
+		linkName="flange"
+		filterCutoff="5.0" />
+</simvizConfiguration>
+
+<robotControlConfiguration robotName="Rizon4s"
+	robotModelFile="${ROBOT_FILES_FOLDER}/Rizon4s_Grav_hemostat.urdf"
+	getMassMatrixFromRedis="false">
+
+	<logger logFolderName="log_files/suture_teleop/controllers"
+		enabledAtStartup="false"
+		addTimestampToFilename="false" />
+
+	<!-- Jogging: responsive but velocity-limited so teleop stays controllable. -->
+	<controller name="cartesian_controller">
+		<motionForceTask name="cartesian_task" linkName="flange">
+			<velocitySaturation enabled="true" linearVelocityLimit="0.15" angularVelocityLimit="0.8" />
+			<otg type="acceleration"
+				maxLinearVelocity="0.15"
+				maxAngularVelocity="1.2"
+				maxLinearAcceleration="2.0"
+				maxLinearJerk="8.0"
+				maxAngularAcceleration="4.0"
+				maxAngularJerk="100"/>
+			<positionGains kp="400.0" kv="40.0" />
+			<orientationGains kp="400.0" kv="40.0" />
+		</motionForceTask>
+		<jointTask name="joint_task"><otg type="disabled" /></jointTask>
+	</controller>
+
+	<!-- Playback: drive joints straight to the recorded/smoothed trajectory. -->
+	<controller name="joint_controller">
+		<jointTask name="joint_task">
+			<velocitySaturation enabled="true" />
+			<otg type="acceleration" maxVelocity="1.2" maxAcceleration="4.0" maxJerk="40.0" />
+			<gains kp="100.0" kv="20.0" />
+		</jointTask>
+	</controller>
+
+</robotControlConfiguration>

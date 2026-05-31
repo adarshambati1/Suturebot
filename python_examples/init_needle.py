@@ -30,7 +30,10 @@ ROBOT = "Rizon4s"
 ORI = np.array([[1.0, 0.0, 0.0],
                 [0.0, -0.81915, -0.57358],
                 [0.0, 0.57358, -0.81915]])
-GRASP_POS = np.array([0.00778, 0.00587, 0.28510])
+# GRASP_POS lands the grip (1/3 from swage) exactly on the hemostat jaw tip
+# (flange-frame (-0.0085,-0.0015,0.283), from the gripper FK) -- needle truly
+# between the jaws.
+GRASP_POS = np.array([-0.00072, 0.00438, 0.28769])
 GRASP_R = np.array([[0.0, -1.0, 0.0],
                     [-0.75471, 0.0, 0.65606],
                     [-0.65606, 0.0, -0.75471]])

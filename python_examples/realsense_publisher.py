@@ -75,9 +75,12 @@ def parse_args() -> argparse.Namespace:
                    help="3D render output width (default 640)")
     p.add_argument("--render-height", type=int, default=480,
                    help="3D render output height (default 480)")
-    p.add_argument("--tilt-deg", type=float, default=18.0,
-                   help="orbit the view around Y by this many degrees for a 3D-looking "
-                        "parallax (default 18). 0 = head-on, larger = more side angle.")
+    p.add_argument("--tilt-deg", type=float, default=30.0,
+                   help="azimuth: orbit the view around Y by this many degrees "
+                        "(default 30). 0 = head-on, larger = more side angle.")
+    p.add_argument("--elevation-deg", type=float, default=25.0,
+                   help="elevation: tilt the view DOWN by this many degrees "
+                        "(default 25). 0 = head-on, larger = more bird's-eye.")
     p.add_argument("--z-near", type=float, default=0.05,
                    help="discard mesh vertices closer than this in meters (default 0.05)")
     p.add_argument("--z-far", type=float, default=2.0,
@@ -135,9 +138,11 @@ def depth_to_mesh(
     y = (vv - cy) * z / fy
     verts = np.stack([x, y, z], axis=-1).reshape(-1, 3).astype(np.float64)
 
-    # Per-vertex texture coords in image-normalized space (0,0 = top-left).
+    # Per-vertex texture coords. Open3D samples textures with OpenGL convention
+    # (V=0 at the BOTTOM of the image), but our image is row-major with row 0
+    # at the top -- so we invert V to keep the texture right-side-up on the mesh.
     u_norm = (uu / max(w - 1, 1)).reshape(-1)
-    v_norm = (vv / max(h - 1, 1)).reshape(-1)
+    v_norm = (1.0 - vv / max(h - 1, 1)).reshape(-1)
     uv_per_vertex = np.stack([u_norm, v_norm], axis=-1)
 
     idx = np.arange(h * w, dtype=np.int32).reshape(h, w)
@@ -198,7 +203,8 @@ def render_mesh_view(
     mat,
     mesh: o3d.geometry.TriangleMesh,
     color_rgb: np.ndarray,
-    tilt_deg: float,
+    azimuth_deg: float,
+    elevation_deg: float,
     fov_deg: float,
     center_xyz: np.ndarray,
     orbit_dist: float,
@@ -219,10 +225,23 @@ def render_mesh_view(
     renderer.scene.add_geometry("frame", mesh, mat)
 
     center = np.asarray(center_xyz, dtype=np.float64)
-    ang = math.radians(tilt_deg)
-    offset = np.array([orbit_dist * math.sin(ang), 0.0, -orbit_dist * math.cos(ang)])
+    az = math.radians(azimuth_deg)
+    el = math.radians(elevation_deg)
+    # Spherical orbit: virtual camera sits at `orbit_dist` from `center`,
+    # rotated `az` around the Y axis (side angle) and lifted `el` above the
+    # horizontal plane (look-down). Without elevation the view is head-on and
+    # the depth structure isn't visible -- with elevation, the back-projected
+    # 3D points show up as height above the rest of the scene, the same way
+    # realsense-viewer reveals depth in its default 3D angle.
+    # Depth Y points DOWN, so "world up" is -Y -> lift = -sin(el).
+    cos_el = math.cos(el)
+    offset = np.array([
+        orbit_dist * cos_el * math.sin(az),
+        -orbit_dist * math.sin(el),
+        -orbit_dist * cos_el * math.cos(az),
+    ])
     eye = center + offset
-    up = np.array([0.0, -1.0, 0.0])
+    up = np.array([0.0, -1.0, 0.0])   # world up = -Y in depth-cam convention
 
     renderer.setup_camera(fov_deg, center.tolist(), eye.tolist(), up.tolist())
 
@@ -285,7 +304,8 @@ def main() -> None:
             print("  orbit dist = auto (from scene depth extent)")
         else:
             print(f"  orbit dist = {args.orbit_dist:.2f} m (fixed)")
-        print(f"  tilt = {args.tilt_deg:.0f} deg, rotate-3d = {args.threed_rotate} deg")
+        print(f"  azimuth = {args.tilt_deg:.0f} deg,  elevation = {args.elevation_deg:.0f} deg,"
+              f"  rotate-3d = {args.threed_rotate} deg")
 
     r = redis.Redis(host=args.host, port=args.port)
     r.ping()
@@ -359,7 +379,8 @@ def main() -> None:
 
                     color_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                     rendered = render_mesh_view(renderer, mat, mesh, color_rgb,
-                                                args.tilt_deg, args.fov,
+                                                args.tilt_deg, args.elevation_deg,
+                                                args.fov,
                                                 orbit_center, od,
                                                 args.render_width, args.render_height,
                                                 args.threed_rotate)

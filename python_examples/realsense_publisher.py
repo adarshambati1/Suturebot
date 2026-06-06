@@ -91,13 +91,24 @@ def parse_args() -> argparse.Namespace:
                    help="Use 'defaultLit' shader with a sun light (adds shading). "
                         "Off by default for realsense-viewer-style flat-textured look.")
     p.add_argument("--center-x", type=float, default=0.0,
-                   help="x coord of the fixed orbit center, in the camera frame (m)")
+                   help="x coord of the orbit center, in the camera frame (m)")
     p.add_argument("--center-y", type=float, default=0.0,
-                   help="y coord of the fixed orbit center, in the camera frame (m)")
-    p.add_argument("--center-z", type=float, default=0.4,
-                   help="z coord (depth) of the fixed orbit center (m, default 0.4)")
-    p.add_argument("--orbit-dist", type=float, default=0.55,
-                   help="distance from the orbit center back to the virtual camera (m)")
+                   help="y coord of the orbit center, in the camera frame (m)")
+    p.add_argument("--center-z", type=float, default=None,
+                   help="z coord (depth) of the orbit center, in meters. "
+                        "Default = auto from the median depth of the visible scene, "
+                        "smoothed across frames so it stays stable.")
+    p.add_argument("--orbit-dist", type=float, default=None,
+                   help="distance from the orbit center back to the virtual camera (m). "
+                        "Default = ~1.5x the scene's depth extent so the mesh fits.")
+    p.add_argument("--auto-center-alpha", type=float, default=0.92,
+                   help="EMA smoothing on the auto-computed scene center; higher = "
+                        "more stable, slower to follow scene changes (default 0.92)")
+    p.add_argument("--3d-rotate", dest="threed_rotate",
+                   type=int, choices=[0, 90, 180, 270], default=180,
+                   help="rotate the rendered 3D image by this many degrees clockwise "
+                        "before publishing. Default 180 (camera mount is inverted). "
+                        "Does NOT affect the 2D color stream.")
     p.add_argument("--threed-jpeg-quality", type=int, default=70,
                    help="JPEG quality for the 3D render (default 70)")
     return p.parse_args()
@@ -193,6 +204,7 @@ def render_mesh_view(
     orbit_dist: float,
     render_w: int,
     render_h: int,
+    rotate_deg: int = 0,
 ) -> np.ndarray:
     """Add `mesh` (with triangle_uvs) to the renderer's scene, set the color
     image as its albedo texture, and snap a BGR image from a camera orbited
@@ -220,7 +232,14 @@ def render_mesh_view(
         rgb = cv2.cvtColor(rgb, cv2.COLOR_GRAY2RGB)
     elif rgb.shape[-1] == 4:
         rgb = rgb[..., :3]
-    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    if rotate_deg == 90:
+        bgr = cv2.rotate(bgr, cv2.ROTATE_90_CLOCKWISE)
+    elif rotate_deg == 180:
+        bgr = cv2.rotate(bgr, cv2.ROTATE_180)
+    elif rotate_deg == 270:
+        bgr = cv2.rotate(bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return bgr
 
 
 def main() -> None:
@@ -258,10 +277,15 @@ def main() -> None:
         renderer, mat = make_renderer(args.render_width, args.render_height, args.lit)
         print(f"Open3D OffscreenRenderer ready: {args.render_width}x{args.render_height}, "
               f"shader={'defaultLit + sun' if args.lit else 'defaultUnlit (textured)'}")
-        orbit_center = np.array([args.center_x, args.center_y, args.center_z],
-                                dtype=np.float64)
-        print(f"  orbit center = {orbit_center.tolist()} m,  dist = {args.orbit_dist:.2f} m,"
-              f"  tilt = {args.tilt_deg:.0f} deg")
+        if args.center_z is None:
+            print(f"  orbit center z = auto (EMA alpha {args.auto_center_alpha:.2f})")
+        else:
+            print(f"  orbit center z = {args.center_z:.3f} m (fixed)")
+        if args.orbit_dist is None:
+            print("  orbit dist = auto (from scene depth extent)")
+        else:
+            print(f"  orbit dist = {args.orbit_dist:.2f} m (fixed)")
+        print(f"  tilt = {args.tilt_deg:.0f} deg, rotate-3d = {args.threed_rotate} deg")
 
     r = redis.Redis(host=args.host, port=args.port)
     r.ping()
@@ -277,6 +301,11 @@ def main() -> None:
     n = 0
     t0 = time.monotonic()
     last_3d_kb = 0.0
+    # EMA-smoothed scene depth + extent, populated from the depth image each
+    # frame when --center-z or --orbit-dist is left as auto.
+    smoothed_center_z: float | None = None
+    smoothed_extent_z: float | None = None
+    ema_alpha = args.auto_center_alpha
 
     try:
         while True:
@@ -302,11 +331,38 @@ def main() -> None:
                     fx, fy, cx, cy = color_intr   # type: ignore
                     mesh = depth_to_mesh(depth_m, fx, fy, cx, cy,
                                          args.z_near, args.z_far, args.max_edge)
+
+                    # Auto-derive a stable scene center + orbit distance from
+                    # the visible depths, smoothed across frames. User-supplied
+                    # values (--center-z / --orbit-dist) override.
+                    valid_mask = (depth_m > args.z_near) & (depth_m < args.z_far)
+                    if valid_mask.any():
+                        valid_z = depth_m[valid_mask]
+                        new_center = float(np.median(valid_z))
+                        # 5th-95th percentile spread is a robust "extent".
+                        z_lo, z_hi = np.percentile(valid_z, [5, 95])
+                        new_extent = max(float(z_hi - z_lo), 0.05)
+                        if smoothed_center_z is None:
+                            smoothed_center_z = new_center
+                            smoothed_extent_z = new_extent
+                        else:
+                            smoothed_center_z = (ema_alpha * smoothed_center_z
+                                                 + (1.0 - ema_alpha) * new_center)
+                            smoothed_extent_z = (ema_alpha * smoothed_extent_z
+                                                 + (1.0 - ema_alpha) * new_extent)
+
+                    cz = args.center_z if args.center_z is not None else (smoothed_center_z or 0.4)
+                    od = args.orbit_dist if args.orbit_dist is not None else max(
+                        (smoothed_extent_z or 0.3) * 1.5, 0.25)
+                    orbit_center = np.array([args.center_x, args.center_y, cz],
+                                             dtype=np.float64)
+
                     color_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                     rendered = render_mesh_view(renderer, mat, mesh, color_rgb,
                                                 args.tilt_deg, args.fov,
-                                                orbit_center, args.orbit_dist,
-                                                args.render_width, args.render_height)
+                                                orbit_center, od,
+                                                args.render_width, args.render_height,
+                                                args.threed_rotate)
                     ok2, buf2 = cv2.imencode(".jpg", rendered, threed_encode)
                     if ok2:
                         r.set(args.threed_key,

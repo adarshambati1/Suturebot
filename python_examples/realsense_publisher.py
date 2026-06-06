@@ -108,10 +108,18 @@ def parse_args() -> argparse.Namespace:
                    help="EMA smoothing on the auto-computed scene center; higher = "
                         "more stable, slower to follow scene changes (default 0.92)")
     p.add_argument("--3d-rotate", dest="threed_rotate",
-                   type=int, choices=[0, 90, 180, 270], default=180,
+                   type=int, choices=[0, 90, 180, 270], default=0,
                    help="rotate the rendered 3D image by this many degrees clockwise "
-                        "before publishing. Default 180 (camera mount is inverted). "
-                        "Does NOT affect the 2D color stream.")
+                        "before publishing (default 0). Does NOT affect the 2D stream.")
+    p.add_argument("--3d-vflip", dest="threed_vflip", action="store_true", default=True,
+                   help="flip the rendered 3D image vertically before publishing "
+                        "(top<->bottom). Default ON to compensate for the inverted "
+                        "camera mount.")
+    p.add_argument("--no-3d-vflip", dest="threed_vflip", action="store_false",
+                   help="disable the vertical flip on the 3D render.")
+    p.add_argument("--3d-hflip", dest="threed_hflip", action="store_true", default=False,
+                   help="flip the rendered 3D image horizontally before publishing "
+                        "(left<->right). Off by default.")
     p.add_argument("--threed-jpeg-quality", type=int, default=70,
                    help="JPEG quality for the 3D render (default 70)")
     return p.parse_args()
@@ -211,6 +219,8 @@ def render_mesh_view(
     render_w: int,
     render_h: int,
     rotate_deg: int = 0,
+    vflip: bool = False,
+    hflip: bool = False,
 ) -> np.ndarray:
     """Add `mesh` (with triangle_uvs) to the renderer's scene, set the color
     image as its albedo texture, and snap a BGR image from a camera orbited
@@ -252,6 +262,12 @@ def render_mesh_view(
     elif rgb.shape[-1] == 4:
         rgb = rgb[..., :3]
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    if vflip and hflip:
+        bgr = cv2.flip(bgr, -1)
+    elif vflip:
+        bgr = cv2.flip(bgr, 0)
+    elif hflip:
+        bgr = cv2.flip(bgr, 1)
     if rotate_deg == 90:
         bgr = cv2.rotate(bgr, cv2.ROTATE_90_CLOCKWISE)
     elif rotate_deg == 180:
@@ -305,7 +321,8 @@ def main() -> None:
         else:
             print(f"  orbit dist = {args.orbit_dist:.2f} m (fixed)")
         print(f"  azimuth = {args.tilt_deg:.0f} deg,  elevation = {args.elevation_deg:.0f} deg,"
-              f"  rotate-3d = {args.threed_rotate} deg")
+              f"  rotate = {args.threed_rotate} deg,"
+              f"  vflip = {args.threed_vflip}, hflip = {args.threed_hflip}")
 
     r = redis.Redis(host=args.host, port=args.port)
     r.ping()
@@ -383,7 +400,8 @@ def main() -> None:
                                                 args.fov,
                                                 orbit_center, od,
                                                 args.render_width, args.render_height,
-                                                args.threed_rotate)
+                                                args.threed_rotate,
+                                                args.threed_vflip, args.threed_hflip)
                     ok2, buf2 = cv2.imencode(".jpg", rendered, threed_encode)
                     if ok2:
                         r.set(args.threed_key,

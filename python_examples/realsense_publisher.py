@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import math
 import struct
+import threading
 import time
 
 import cv2
@@ -71,16 +72,20 @@ def parse_args() -> argparse.Namespace:
                    help=f"Redis key for 3D mesh render JPEG (default: {DEFAULT_3D_KEY})")
     p.add_argument("--depth-width", type=int, default=640, help="depth width (default 640)")
     p.add_argument("--depth-height", type=int, default=480, help="depth height (default 480)")
-    p.add_argument("--render-width", type=int, default=640,
-                   help="3D render output width (default 640)")
-    p.add_argument("--render-height", type=int, default=480,
-                   help="3D render output height (default 480)")
-    p.add_argument("--tilt-deg", type=float, default=30.0,
+    p.add_argument("--render-width", type=int, default=480,
+                   help="3D render output width (default 480)")
+    p.add_argument("--render-height", type=int, default=360,
+                   help="3D render output height (default 360)")
+    p.add_argument("--depth-step", type=int, default=2,
+                   help="subsample depth + color by this stride before meshing "
+                        "(default 2 -> 4x fewer vertices/triangles, big speedup, "
+                        "near-invisible quality drop). 1 = no subsampling.")
+    p.add_argument("--tilt-deg", type=float, default=60.0,
                    help="azimuth: orbit the view around Y by this many degrees "
-                        "(default 30). 0 = head-on, larger = more side angle.")
-    p.add_argument("--elevation-deg", type=float, default=25.0,
+                        "(default 60 = strong side view). 0 = head-on, 90 = fully side.")
+    p.add_argument("--elevation-deg", type=float, default=30.0,
                    help="elevation: tilt the view DOWN by this many degrees "
-                        "(default 25). 0 = head-on, larger = more bird's-eye.")
+                        "(default 30). 0 = head-on, larger = more bird's-eye.")
     p.add_argument("--z-near", type=float, default=0.05,
                    help="discard mesh vertices closer than this in meters (default 0.05)")
     p.add_argument("--z-far", type=float, default=2.0,
@@ -111,12 +116,9 @@ def parse_args() -> argparse.Namespace:
                    type=int, choices=[0, 90, 180, 270], default=0,
                    help="rotate the rendered 3D image by this many degrees clockwise "
                         "before publishing (default 0). Does NOT affect the 2D stream.")
-    p.add_argument("--3d-vflip", dest="threed_vflip", action="store_true", default=True,
+    p.add_argument("--3d-vflip", dest="threed_vflip", action="store_true", default=False,
                    help="flip the rendered 3D image vertically before publishing "
-                        "(top<->bottom). Default ON to compensate for the inverted "
-                        "camera mount.")
-    p.add_argument("--no-3d-vflip", dest="threed_vflip", action="store_false",
-                   help="disable the vertical flip on the 3D render.")
+                        "(top<->bottom). Off by default.")
     p.add_argument("--3d-hflip", dest="threed_hflip", action="store_true", default=False,
                    help="flip the rendered 3D image horizontally before publishing "
                         "(left<->right). Off by default.")
@@ -129,6 +131,7 @@ def depth_to_mesh(
     depth_m: np.ndarray,
     fx: float, fy: float, cx: float, cy: float,
     z_near: float, z_far: float, max_edge: float,
+    compute_normals: bool = False,
 ) -> o3d.geometry.TriangleMesh:
     """Triangulate a depth image into a mesh in the camera frame. Texture
     coordinates are assigned so the aligned color image can later be applied
@@ -181,8 +184,9 @@ def depth_to_mesh(
     mesh.vertices = o3d.utility.Vector3dVector(verts)
     mesh.triangles = o3d.utility.Vector3iVector(triangles)
     mesh.triangle_uvs = o3d.utility.Vector2dVector(tri_uvs)
-    # Lit shader needs normals; safe to compute for unlit too.
-    mesh.compute_vertex_normals()
+    if compute_normals:
+        # Lit shader needs normals; ~50ms+ on 600k triangles, so skip when unlit.
+        mesh.compute_vertex_normals()
     return mesh
 
 
@@ -277,6 +281,110 @@ def render_mesh_view(
     return bgr
 
 
+class _RenderWorker(threading.Thread):
+    """Background 3D mesh renderer. Decouples the heavy Open3D pipeline from
+    the main color-publish path so a slow render never drags the color stream
+    down -- color goes out at full capture rate, 3D goes out at whatever the
+    renderer can sustain."""
+
+    def __init__(self, r: redis.Redis, args, color_intr):
+        super().__init__(daemon=True)
+        self.r = r
+        self.args = args
+        self.color_intr = color_intr
+        self._lock = threading.Lock()
+        self._latest = None              # (depth_m, img_bgr, ts) -- newest wins
+        self._evt = threading.Event()
+        self._stop = threading.Event()
+        self._smoothed_center_z = None
+        self._smoothed_extent_z = None
+        self.last_3d_kb = 0.0
+        self.frame_count = 0
+
+    def submit(self, depth_m: np.ndarray, img_bgr: np.ndarray, ts: float) -> None:
+        with self._lock:
+            self._latest = (depth_m, img_bgr, ts)
+        self._evt.set()
+
+    def shutdown(self) -> None:
+        self._stop.set()
+        self._evt.set()
+
+    def run(self) -> None:
+        # Build the Open3D renderer inside this thread (OffscreenRenderer
+        # owns a GL context, safest to keep it thread-local).
+        args = self.args
+        renderer, mat = make_renderer(args.render_width, args.render_height, args.lit)
+        threed_encode = [int(cv2.IMWRITE_JPEG_QUALITY), args.threed_jpeg_quality]
+        print(f"Open3D OffscreenRenderer ready (in worker thread): "
+              f"{args.render_width}x{args.render_height}, "
+              f"shader={'defaultLit + sun' if args.lit else 'defaultUnlit (textured)'}")
+
+        while not self._stop.is_set():
+            self._evt.wait()
+            self._evt.clear()
+            if self._stop.is_set():
+                break
+            with self._lock:
+                latest = self._latest
+                self._latest = None
+            if latest is None:
+                continue
+            depth_m, img_bgr, ts = latest
+            try:
+                self._render_and_publish(renderer, mat, threed_encode,
+                                         depth_m, img_bgr, ts)
+            except Exception as e:
+                print(f"[3D worker] render error: {e}")
+
+    def _render_and_publish(self, renderer, mat, threed_encode,
+                            depth_m, img_bgr, ts) -> None:
+        args = self.args
+        fx, fy, cx, cy = self.color_intr
+        s = max(args.depth_step, 1)
+        if s > 1:
+            depth_m = depth_m[::s, ::s]
+            img_bgr = img_bgr[::s, ::s]
+            fx, fy = fx / s, fy / s
+            cx, cy = cx / s, cy / s
+        mesh = depth_to_mesh(depth_m, fx, fy, cx, cy,
+                             args.z_near, args.z_far, args.max_edge,
+                             compute_normals=args.lit)
+
+        # Auto-derived scene center and orbit distance (smoothed).
+        valid_mask = (depth_m > args.z_near) & (depth_m < args.z_far)
+        if valid_mask.any():
+            vz = depth_m[valid_mask]
+            new_center = float(np.median(vz))
+            z_lo, z_hi = np.percentile(vz, [5, 95])
+            new_extent = max(float(z_hi - z_lo), 0.05)
+            ea = args.auto_center_alpha
+            if self._smoothed_center_z is None:
+                self._smoothed_center_z = new_center
+                self._smoothed_extent_z = new_extent
+            else:
+                self._smoothed_center_z = ea * self._smoothed_center_z + (1 - ea) * new_center
+                self._smoothed_extent_z = ea * self._smoothed_extent_z + (1 - ea) * new_extent
+
+        cz = args.center_z if args.center_z is not None else (self._smoothed_center_z or 0.4)
+        od = args.orbit_dist if args.orbit_dist is not None else max(
+            (self._smoothed_extent_z or 0.3) * 1.5, 0.25)
+        orbit_center = np.array([args.center_x, args.center_y, cz], dtype=np.float64)
+
+        color_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        rendered = render_mesh_view(renderer, mat, mesh, color_rgb,
+                                    args.tilt_deg, args.elevation_deg, args.fov,
+                                    orbit_center, od,
+                                    args.render_width, args.render_height,
+                                    args.threed_rotate,
+                                    args.threed_vflip, args.threed_hflip)
+        ok, buf = cv2.imencode(".jpg", rendered, threed_encode)
+        if ok:
+            self.r.set(args.threed_key, struct.pack("<d", ts) + buf.tobytes())
+            self.last_3d_kb = len(buf) / 1024.0
+            self.frame_count += 1
+
+
 def main() -> None:
     args = parse_args()
 
@@ -299,8 +407,7 @@ def main() -> None:
     align = None
     color_intr = None
     depth_scale = 1.0 / 1000.0
-    renderer = None
-    mat = None
+    worker = None
 
     if not args.no_3d:
         align = rs.align(rs.stream.color)
@@ -309,17 +416,14 @@ def main() -> None:
         color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
         ci = color_profile.get_intrinsics()
         color_intr = (ci.fx, ci.fy, ci.ppx, ci.ppy)
-        renderer, mat = make_renderer(args.render_width, args.render_height, args.lit)
-        print(f"Open3D OffscreenRenderer ready: {args.render_width}x{args.render_height}, "
-              f"shader={'defaultLit + sun' if args.lit else 'defaultUnlit (textured)'}")
         if args.center_z is None:
-            print(f"  orbit center z = auto (EMA alpha {args.auto_center_alpha:.2f})")
+            print(f"3D orbit center z = auto (EMA alpha {args.auto_center_alpha:.2f})")
         else:
-            print(f"  orbit center z = {args.center_z:.3f} m (fixed)")
+            print(f"3D orbit center z = {args.center_z:.3f} m (fixed)")
         if args.orbit_dist is None:
-            print("  orbit dist = auto (from scene depth extent)")
+            print("3D orbit dist = auto (from scene depth extent)")
         else:
-            print(f"  orbit dist = {args.orbit_dist:.2f} m (fixed)")
+            print(f"3D orbit dist = {args.orbit_dist:.2f} m (fixed)")
         print(f"  azimuth = {args.tilt_deg:.0f} deg,  elevation = {args.elevation_deg:.0f} deg,"
               f"  rotate = {args.threed_rotate} deg,"
               f"  vflip = {args.threed_vflip}, hflip = {args.threed_hflip}")
@@ -331,18 +435,13 @@ def main() -> None:
         print(f"Publishing 3D mesh JPEG to key '{args.threed_key}' "
               f"(tilt {args.tilt_deg:.0f}deg, FOV {args.fov:.0f}deg, "
               f"max_edge {args.max_edge*1000:.0f}mm)")
+        worker = _RenderWorker(r, args, color_intr)
+        worker.start()
     print("Ctrl-C to stop.")
 
     color_encode = [int(cv2.IMWRITE_JPEG_QUALITY), args.jpeg_quality]
-    threed_encode = [int(cv2.IMWRITE_JPEG_QUALITY), args.threed_jpeg_quality]
     n = 0
     t0 = time.monotonic()
-    last_3d_kb = 0.0
-    # EMA-smoothed scene depth + extent, populated from the depth image each
-    # frame when --center-z or --orbit-dist is left as auto.
-    smoothed_center_z: float | None = None
-    smoothed_extent_z: float | None = None
-    ema_alpha = args.auto_center_alpha
 
     try:
         while True:
@@ -361,64 +460,28 @@ def main() -> None:
             header = struct.pack("<d", ts)
             r.set(args.key, header + buf.tobytes())
 
-            if renderer is not None:
+            if worker is not None:
                 depth = frames.get_depth_frame()
                 if depth:
-                    depth_m = np.asanyarray(depth.get_data()).astype(np.float32) * depth_scale
-                    fx, fy, cx, cy = color_intr   # type: ignore
-                    mesh = depth_to_mesh(depth_m, fx, fy, cx, cy,
-                                         args.z_near, args.z_far, args.max_edge)
-
-                    # Auto-derive a stable scene center + orbit distance from
-                    # the visible depths, smoothed across frames. User-supplied
-                    # values (--center-z / --orbit-dist) override.
-                    valid_mask = (depth_m > args.z_near) & (depth_m < args.z_far)
-                    if valid_mask.any():
-                        valid_z = depth_m[valid_mask]
-                        new_center = float(np.median(valid_z))
-                        # 5th-95th percentile spread is a robust "extent".
-                        z_lo, z_hi = np.percentile(valid_z, [5, 95])
-                        new_extent = max(float(z_hi - z_lo), 0.05)
-                        if smoothed_center_z is None:
-                            smoothed_center_z = new_center
-                            smoothed_extent_z = new_extent
-                        else:
-                            smoothed_center_z = (ema_alpha * smoothed_center_z
-                                                 + (1.0 - ema_alpha) * new_center)
-                            smoothed_extent_z = (ema_alpha * smoothed_extent_z
-                                                 + (1.0 - ema_alpha) * new_extent)
-
-                    cz = args.center_z if args.center_z is not None else (smoothed_center_z or 0.4)
-                    od = args.orbit_dist if args.orbit_dist is not None else max(
-                        (smoothed_extent_z or 0.3) * 1.5, 0.25)
-                    orbit_center = np.array([args.center_x, args.center_y, cz],
-                                             dtype=np.float64)
-
-                    color_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    rendered = render_mesh_view(renderer, mat, mesh, color_rgb,
-                                                args.tilt_deg, args.elevation_deg,
-                                                args.fov,
-                                                orbit_center, od,
-                                                args.render_width, args.render_height,
-                                                args.threed_rotate,
-                                                args.threed_vflip, args.threed_hflip)
-                    ok2, buf2 = cv2.imencode(".jpg", rendered, threed_encode)
-                    if ok2:
-                        r.set(args.threed_key,
-                              struct.pack("<d", ts) + buf2.tobytes())
-                        last_3d_kb = len(buf2) / 1024.0
+                    depth_m = (np.asanyarray(depth.get_data()).astype(np.float32)
+                               * depth_scale)
+                    # img.copy() because img is a view into the RealSense buffer,
+                    # which gets reused next iteration.
+                    worker.submit(depth_m, img.copy(), ts)
 
             n += 1
             if n % args.fps == 0:
                 dt = time.monotonic() - t0
-                msg = (f"  {n} frames, {n / dt:5.1f} fps, "
-                       f"color {len(buf)/1024:5.1f} KB")
-                if renderer is not None:
-                    msg += f", 3D {last_3d_kb:5.1f} KB"
+                msg = (f"  color {n / dt:5.1f} fps ({len(buf)/1024:5.1f} KB)")
+                if worker is not None:
+                    msg += (f"  |  3D {worker.frame_count / dt:5.1f} fps "
+                            f"({worker.last_3d_kb:5.1f} KB)")
                 print(msg)
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
+        if worker is not None:
+            worker.shutdown()
         pipeline.stop()
 
 

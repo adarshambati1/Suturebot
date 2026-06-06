@@ -88,8 +88,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fov", type=float, default=55.0,
                    help="virtual camera field-of-view in degrees (default 55)")
     p.add_argument("--lit", action="store_true",
-                   help="Use a lit material (adds shading). Default is unlit for true "
-                        "realsense-viewer-style flat-textured look.")
+                   help="Use 'defaultLit' shader with a sun light (adds shading). "
+                        "Off by default for realsense-viewer-style flat-textured look.")
+    p.add_argument("--center-x", type=float, default=0.0,
+                   help="x coord of the fixed orbit center, in the camera frame (m)")
+    p.add_argument("--center-y", type=float, default=0.0,
+                   help="y coord of the fixed orbit center, in the camera frame (m)")
+    p.add_argument("--center-z", type=float, default=0.4,
+                   help="z coord (depth) of the fixed orbit center (m, default 0.4)")
+    p.add_argument("--orbit-dist", type=float, default=0.55,
+                   help="distance from the orbit center back to the virtual camera (m)")
     p.add_argument("--threed-jpeg-quality", type=int, default=70,
                    help="JPEG quality for the 3D render (default 70)")
     return p.parse_args()
@@ -97,14 +105,16 @@ def parse_args() -> argparse.Namespace:
 
 def depth_to_mesh(
     depth_m: np.ndarray,
-    color_bgr: np.ndarray,
     fx: float, fy: float, cx: float, cy: float,
     z_near: float, z_far: float, max_edge: float,
 ) -> o3d.geometry.TriangleMesh:
-    """Triangulate a depth+color image into a colored mesh in the camera frame.
+    """Triangulate a depth image into a mesh in the camera frame. Texture
+    coordinates are assigned so the aligned color image can later be applied
+    as an albedo texture in the renderer (vertex colors are notoriously
+    unreliable with Open3D's offscreen lit/unlit shaders; texture path works).
 
-    Triangles with invalid depth or large depth jumps are dropped so the mesh
-    follows the real scene's silhouettes instead of dragging skirts.
+    Triangles whose vertices span large depth jumps (`max_edge`) are dropped
+    so distant background doesn't drag a skirt through the foreground.
     """
     h, w = depth_m.shape
     uu, vv = np.meshgrid(np.arange(w, dtype=np.float32),
@@ -114,8 +124,10 @@ def depth_to_mesh(
     y = (vv - cy) * z / fy
     verts = np.stack([x, y, z], axis=-1).reshape(-1, 3).astype(np.float64)
 
-    rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB).astype(np.float64) / 255.0
-    colors = rgb.reshape(-1, 3)
+    # Per-vertex texture coords in image-normalized space (0,0 = top-left).
+    u_norm = (uu / max(w - 1, 1)).reshape(-1)
+    v_norm = (vv / max(h - 1, 1)).reshape(-1)
+    uv_per_vertex = np.stack([u_norm, v_norm], axis=-1)
 
     idx = np.arange(h * w, dtype=np.int32).reshape(h, w)
     tl = idx[:-1, :-1].reshape(-1)
@@ -138,29 +150,35 @@ def depth_to_mesh(
              (np.abs(z0 - z2) < max_edge))
     triangles = triangles[valid]
 
+    # triangle_uvs in Open3D is (3*num_triangles, 2): one UV per triangle corner.
+    tri_uvs = uv_per_vertex[triangles].reshape(-1, 2)
+
     mesh = o3d.geometry.TriangleMesh()
     mesh.vertices = o3d.utility.Vector3dVector(verts)
-    mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
     mesh.triangles = o3d.utility.Vector3iVector(triangles)
+    mesh.triangle_uvs = o3d.utility.Vector2dVector(tri_uvs)
+    # Lit shader needs normals; safe to compute for unlit too.
+    mesh.compute_vertex_normals()
     return mesh
 
 
 def make_renderer(width: int, height: int, lit: bool):
-    """Create an Open3D offscreen renderer with a sensible background and
-    optional sun light. Returns (renderer, material)."""
+    """Create an Open3D offscreen renderer with a sensible background.
+    Default is the unlit shader (flat textured = realsense-viewer look).
+    --lit switches to defaultLit with a sun light for shading."""
     renderer = o3d_rendering.OffscreenRenderer(width, height)
     renderer.scene.set_background([0.05, 0.05, 0.05, 1.0])
     mat = o3d_rendering.MaterialRecord()
+    mat.base_color = [1.0, 1.0, 1.0, 1.0]
     if lit:
         mat.shader = "defaultLit"
-        # Soft sun roughly from above-and-to-the-side.
         try:
-            renderer.scene.scene.set_sun_light([0.45, -0.75, -0.5], [1.0, 1.0, 1.0], 80000.0)
+            renderer.scene.scene.set_sun_light([0.0, -0.3, -1.0], [1.0, 1.0, 1.0], 80000.0)
             renderer.scene.scene.enable_sun_light(True)
         except Exception:
             pass
     else:
-        mat.shader = "defaultUnlit"   # pure vertex-color, no shading
+        mat.shader = "defaultUnlit"
     return renderer, mat
 
 
@@ -168,38 +186,40 @@ def render_mesh_view(
     renderer,
     mat,
     mesh: o3d.geometry.TriangleMesh,
+    color_rgb: np.ndarray,
     tilt_deg: float,
     fov_deg: float,
+    center_xyz: np.ndarray,
+    orbit_dist: float,
+    render_w: int,
+    render_h: int,
 ) -> np.ndarray:
-    """Place `mesh` in the renderer's scene and snap a BGR image of it from a
-    camera orbited around the mesh center by `tilt_deg` around the Y axis."""
+    """Add `mesh` (with triangle_uvs) to the renderer's scene, set the color
+    image as its albedo texture, and snap a BGR image from a camera orbited
+    around a FIXED scene center. Fixed center = stable view across frames."""
     if np.asarray(mesh.triangles).shape[0] == 0:
-        # Empty mesh -> just give a blank canvas to avoid Open3D camera errors.
-        w, h = renderer.scene.view.image_width, renderer.scene.view.image_height  # type: ignore
-        return np.zeros((h, w, 3), dtype=np.uint8)
+        return np.zeros((render_h, render_w, 3), dtype=np.uint8)
+
+    # Apply the latest color image as the mesh's albedo texture.
+    mat.albedo_img = o3d.geometry.Image(np.ascontiguousarray(color_rgb))
 
     renderer.scene.clear_geometry()
     renderer.scene.add_geometry("frame", mesh, mat)
 
-    bbox = mesh.get_axis_aligned_bounding_box()
-    center = np.asarray(bbox.get_center(), dtype=np.float64)
-    extent = np.asarray(bbox.get_extent(), dtype=np.float64)
-    diag = float(np.linalg.norm(extent))
-    # Distance: enough to fit the bbox in view at the chosen FOV.
-    fov = math.radians(fov_deg)
-    dist = max(diag / (2.0 * math.tan(fov / 2.0)) * 1.1, 0.3)
-
+    center = np.asarray(center_xyz, dtype=np.float64)
     ang = math.radians(tilt_deg)
-    # Camera looks toward +Z (RealSense convention). We pull back along -Z
-    # and offset along +X / +Y based on tilt to get parallax that reveals depth.
-    offset = np.array([dist * math.sin(ang), 0.0, -dist * math.cos(ang)])
+    offset = np.array([orbit_dist * math.sin(ang), 0.0, -orbit_dist * math.cos(ang)])
     eye = center + offset
-    up = np.array([0.0, -1.0, 0.0])  # depth Y axis points down
+    up = np.array([0.0, -1.0, 0.0])
 
     renderer.setup_camera(fov_deg, center.tolist(), eye.tolist(), up.tolist())
 
     img = renderer.render_to_image()
     rgb = np.asarray(img)
+    if rgb.ndim == 2:
+        rgb = cv2.cvtColor(rgb, cv2.COLOR_GRAY2RGB)
+    elif rgb.shape[-1] == 4:
+        rgb = rgb[..., :3]
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
@@ -237,7 +257,11 @@ def main() -> None:
         color_intr = (ci.fx, ci.fy, ci.ppx, ci.ppy)
         renderer, mat = make_renderer(args.render_width, args.render_height, args.lit)
         print(f"Open3D OffscreenRenderer ready: {args.render_width}x{args.render_height}, "
-              f"shader={'defaultLit' if args.lit else 'defaultUnlit'}")
+              f"shader={'defaultLit + sun' if args.lit else 'defaultUnlit (textured)'}")
+        orbit_center = np.array([args.center_x, args.center_y, args.center_z],
+                                dtype=np.float64)
+        print(f"  orbit center = {orbit_center.tolist()} m,  dist = {args.orbit_dist:.2f} m,"
+              f"  tilt = {args.tilt_deg:.0f} deg")
 
     r = redis.Redis(host=args.host, port=args.port)
     r.ping()
@@ -276,10 +300,13 @@ def main() -> None:
                 if depth:
                     depth_m = np.asanyarray(depth.get_data()).astype(np.float32) * depth_scale
                     fx, fy, cx, cy = color_intr   # type: ignore
-                    mesh = depth_to_mesh(depth_m, img, fx, fy, cx, cy,
+                    mesh = depth_to_mesh(depth_m, fx, fy, cx, cy,
                                          args.z_near, args.z_far, args.max_edge)
-                    rendered = render_mesh_view(renderer, mat, mesh,
-                                                args.tilt_deg, args.fov)
+                    color_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    rendered = render_mesh_view(renderer, mat, mesh, color_rgb,
+                                                args.tilt_deg, args.fov,
+                                                orbit_center, args.orbit_dist,
+                                                args.render_width, args.render_height)
                     ok2, buf2 = cv2.imencode(".jpg", rendered, threed_encode)
                     if ok2:
                         r.set(args.threed_key,

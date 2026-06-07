@@ -27,13 +27,7 @@
 			linkName="flange">
 			<velocitySaturation enabled="false" />
 
-			<otg type="acceleration"
-				maxLinearVelocity="0.1"
-				maxAngularVelocity="1.0"
-				maxLinearAcceleration="1.5"
-				maxLinearJerk="5.0"
-				maxAngularAcceleration="3.0"
-				maxAngularJerk="100"/>
+			<otg type="disabled" />
 
 			<positionGains kp="400.0" kv="40.0" />
 			<orientationGains kp="400.0" kv="40.0" />

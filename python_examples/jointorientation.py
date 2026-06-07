@@ -8,11 +8,11 @@ from dataclasses import dataclass
 
 DEG_TO_RAD = math.pi / 180.0
 
-ROBOT_NAME = "Rizon4s"
+ROBOT_NAME = "Titania"
 
 class State(Enum):
   GOING_TO_JOINT_CONFIG = auto()
-
+  INIT = auto()
 
 @dataclass
 class RedisKeys:
@@ -23,10 +23,11 @@ class RedisKeys:
 
 redis_keys = RedisKeys()
 
-config_file_for_this_example = "suturebot_grav_sim.xml"
+config_file_for_this_example = "suturebot_grav_real.xml"
 joint_controller_to_use = "joint_controller"
 
-first_joint_config = np.array([46.0, -98.0, -115.0, 83.0, 101.0, -24.0, -32.0]) * DEG_TO_RAD
+first_joint_config = np.array([0.0, 20.0, 0.0, 10.0, 0.0, 10.0, 0.0]) * DEG_TO_RAD
+final_joint_config = np.array([46.0, -98.0, -115.0, 83.0, 101.0, -24.0, -32.0]) * DEG_TO_RAD
 
 # redis client
 redis_client = redis.Redis()
@@ -62,15 +63,25 @@ try:
       current_joint_position = np.array(json.loads(redis_client.get(redis_keys.joint_task_current_position)))
       joint_error = np.linalg.norm(first_joint_config - current_joint_position)
    
-      if joint_error < 1e-2:
-        while redis_client.get(redis_keys.active_controller).decode("utf-8") != task_controller_to_use:
-          redis_client.set(redis_keys.active_controller, task_controller_to_use)
-
-        redis_client.set(redis_keys.cartesian_task_goal_position, json.dumps(init_goal_pos.tolist()))
-        redis_client.set(redis_keys.cartesian_task_goal_orientation, json.dumps(init_goal_ori.tolist()))
+      if joint_error < .5:
+        
         state = State.INIT
         print("Joint configuration reached. Switching to cartesian task controller.")
 
+
+      print("joint error: ", joint_error)
+
+    elif state == State.INIT:
+      time.sleep(1)
+      redis_client.set(redis_keys.joint_task_goal_position, json.dumps(final_joint_config.tolist()))
+      current_joint_position = np.array(json.loads(redis_client.get(redis_keys.joint_task_current_position)))
+      joint_error = np.linalg.norm(final_joint_config - current_joint_position)
+
+      if joint_error < .5:
+        
+        
+        state = State.INIT
+        print("Joint configuration reached. Switching to cartesian task controller.")
 
       print("joint error: ", joint_error)
 
@@ -82,26 +93,4 @@ except Exception as e:
   pass
 
 
-
-
-try:
-  while True:
-    loop_time += dt
-    time.sleep(max(0, loop_time - (time.perf_counter_ns() * 1e-9 - init_time)))
-    
-    # state machine
-    if state == State.GOING_TO_JOINT_CONFIG:
-      current_joint_position = np.array(json.loads(redis_client.get(redis_keys.joint_task_current_position)))
-      joint_error = np.linalg.norm(first_joint_config - current_joint_position)
-
-      if joint_error < 1e-2:
-        while redis_client.get(redis_keys.active_controller).decode("utf-8") != task_controller_to_use:
-          redis_client.set(redis_keys.active_controller, task_controller_to_use)
-
-        redis_client.set(redis_keys.cartesian_task_goal_position, json.dumps(init_goal_pos.tolist()))
-        redis_client.set(redis_keys.cartesian_task_goal_orientation, json.dumps(init_goal_ori.tolist()))
-        state = State.INIT
-        print("Joint configuration reached. Switching to cartesian task controller.")
-
-      print("joint error: ", joint_error)
 

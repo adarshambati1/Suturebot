@@ -41,11 +41,13 @@ import threading
 import time
 
 # Nudge Open3D's GL context toward hardware-accelerated EGL before it loads.
-# 'gbm' goes through the kernel's Graphics Buffer Manager directly to the GPU,
-# which is the path Mesa hits the Intel Iris Xe driver on. 'surfaceless' is the
-# alternative; on this lab PC it landed on llvmpipe (CPU). Override by exporting
-# EGL_PLATFORM yourself if your environment needs a different one.
-os.environ.setdefault("EGL_PLATFORM", "gbm")
+# 'surfaceless' is the headless EGL platform Filament (Open3D's render backend)
+# is built around — it does pbuffer/surfaceless rendering, not gbm. Filament
+# never builds a gbm_device, so EGL_PLATFORM=gbm finds no usable configs
+# ("Failed to find any suitable EGL configs") and segfaults. On this PC
+# `eglinfo` confirms the surfaceless platform reaches the Intel Iris Xe GPU
+# (Mesa 25.2.8). Override by exporting EGL_PLATFORM yourself if needed.
+os.environ.setdefault("EGL_PLATFORM", "surfaceless")
 # Mesa often falls back to llvmpipe (CPU) if it can't auto-pick the right
 # hardware DRI driver. Iris is the Intel Xe driver; harmless on other GPUs.
 os.environ.setdefault("MESA_LOADER_DRIVER_OVERRIDE", "iris")

@@ -35,9 +35,20 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import struct
 import threading
 import time
+
+# Nudge Open3D's GL context toward hardware-accelerated EGL before it loads.
+# 'gbm' goes through the kernel's Graphics Buffer Manager directly to the GPU,
+# which is the path Mesa hits the Intel Iris Xe driver on. 'surfaceless' is the
+# alternative; on this lab PC it landed on llvmpipe (CPU). Override by exporting
+# EGL_PLATFORM yourself if your environment needs a different one.
+os.environ.setdefault("EGL_PLATFORM", "gbm")
+# Mesa often falls back to llvmpipe (CPU) if it can't auto-pick the right
+# hardware DRI driver. Iris is the Intel Xe driver; harmless on other GPUs.
+os.environ.setdefault("MESA_LOADER_DRIVER_OVERRIDE", "iris")
 
 import cv2
 import numpy as np
@@ -319,9 +330,18 @@ class _RenderWorker(threading.Thread):
         args = self.args
         renderer, mat = make_renderer(args.render_width, args.render_height, args.lit)
         threed_encode = [int(cv2.IMWRITE_JPEG_QUALITY), args.threed_jpeg_quality]
-        print(f"Open3D OffscreenRenderer ready (in worker thread): "
-              f"{args.render_width}x{args.render_height}, "
-              f"shader={'defaultLit + sun' if args.lit else 'defaultUnlit (textured)'}")
+        # Best-effort: ask Open3D what GL backend it ended up with so the user
+        # can tell hardware-accelerated apart from llvmpipe (software).
+        try:
+            backend = o3d_rendering.OffscreenRenderer.__module__   # noqa: not informative
+            opt = renderer.scene.scene
+            print(f"Open3D OffscreenRenderer ready (in worker thread): "
+                  f"{args.render_width}x{args.render_height}, "
+                  f"shader={'defaultLit + sun' if args.lit else 'defaultUnlit (textured)'}, "
+                  f"EGL_PLATFORM={os.environ.get('EGL_PLATFORM', '(default)')}, "
+                  f"DISPLAY={os.environ.get('DISPLAY', '(unset)')}")
+        except Exception:
+            pass
 
         while not self._stop.is_set():
             self._evt.wait()

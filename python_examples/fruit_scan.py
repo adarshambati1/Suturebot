@@ -134,6 +134,11 @@ EE_OFFSET_FLANGE = np.array([0.0613, 0.0015, -0.2826])
 # Fruit classes to accept (COCO names as used by ultralytics models).
 DEFAULT_FRUIT_CLASSES = ("apple", "orange", "banana")
 
+# Preset hues (OpenCV H, 0..179) to seed the colour tracker when YOLO acquisition
+# is unreliable. "redorange" suits a reddish-orange apple.
+COLOR_HUES = {"red": 0, "redorange": 8, "red-orange": 8, "orange": 15,
+              "yellow": 27, "green": 60}
+
 # Blue-strip HSV thresholds (OpenCV HSV: H 0-179, S/V 0-255).
 BLUE_HSV_LO = np.array([100, 80, 40], dtype=np.uint8)
 BLUE_HSV_HI = np.array([130, 255, 255], dtype=np.uint8)
@@ -580,6 +585,15 @@ class FruitTracker:
         return f
 
 
+def resolve_seed_hue(args):
+    """Hue (OpenCV 0..179) to pre-seed the colour tracker, or None."""
+    if args.fruit_hue is not None:
+        return int(args.fruit_hue) % 180
+    if args.fruit_color:
+        return COLOR_HUES[args.fruit_color]
+    return None
+
+
 # Set True (by run_calibrate) to pop a diagnostic window at every detection.
 _VIS = False
 _VIS_WIN = "fruit_scan (calibrate)"
@@ -716,6 +730,11 @@ def run_calibrate(r, model, classes, args):
     # Acquire with YOLO from a distance, then track by colour (robust when the
     # camera gets close/overhead and YOLO can no longer recognise the fruit).
     tracker = FruitTracker()
+    seed_hue = resolve_seed_hue(args)
+    if seed_hue is not None:
+        tracker.h_center = seed_hue
+        print(f"[calib] seeded colour tracker at hue {seed_hue} "
+              "(colour tracking active from the first frame).")
 
     # 1) coarse: sweep to bring the fruit into view (YOLO learns its colour here).
     poses = scan_grid(start_pos, args.half_extent[0], args.half_extent[1],
@@ -905,6 +924,13 @@ def parse_args():
     p.add_argument("--conf", type=float, default=0.35, help="min detection confidence")
     p.add_argument("--classes", nargs="+", default=list(DEFAULT_FRUIT_CLASSES),
                    help="fruit class names to accept")
+    p.add_argument("--fruit-color", choices=list(COLOR_HUES.keys()), default=None,
+                   help="seed the colour tracker with this fruit colour so it "
+                        "tracks by colour from the start (no YOLO acquisition "
+                        "needed). Use 'redorange' for a reddish-orange apple.")
+    p.add_argument("--fruit-hue", type=int, default=None,
+                   help="seed the colour tracker with an explicit OpenCV hue "
+                        "(0..179); overrides --fruit-color")
     p.add_argument("--roi", nargs=4, type=int, metavar=("X", "Y", "W", "H"),
                    default=None, help="table region in pixels; default = full frame")
     p.add_argument("--approach-height", type=float, default=APPROACH_HEIGHT,
@@ -1023,6 +1049,13 @@ def main():
                   file=sys.stderr)
             sys.exit(1)
         hold_ori = start_ori
+        # One tracker for the whole run: YOLO acquires, colour holds. Seed it if
+        # a --fruit-color/--fruit-hue was given (then it works without any YOLO hit).
+        tracker = FruitTracker()
+        seed_hue = resolve_seed_hue(args)
+        if seed_hue is not None:
+            tracker.h_center = seed_hue
+            print(f"[scan] colour tracker seeded at hue {seed_hue}.")
         poses = scan_grid(start_pos, args.half_extent[0], args.half_extent[1],
                           args.grid[0], args.grid[1], start_pos[2])
         print(f"[scan] sweeping {len(poses)} poses around the start pose "
@@ -1036,7 +1069,7 @@ def main():
                 continue
             scan_frame = frame
             roi = tuple(args.roi) if args.roi else (0, 0, frame.shape[1], frame.shape[0])
-            cand = detect_fruit(model, frame, roi, classes, args.conf)
+            cand = tracker.detect(model, frame, classes, args.conf, roi)
             if cand is not None:
                 fruit = cand
                 print(f"       found {fruit['label']} (conf {fruit['conf']:.2f}) "
@@ -1047,9 +1080,6 @@ def main():
         # Optional: visual-servo the fruit to the image centre before locating,
         # so the depth reading is on-axis and the placement is most accurate.
         if fruit is not None and args.center:
-            tracker = FruitTracker()
-            tracker._learn(scan_frame, fruit["box"])   # seed colour from the YOLO hit
-            tracker.last = (fruit["cx"], fruit["cy"])
             cur_pos, _ = read_actual_pose(r)
             J = estimate_image_jacobian(r, model, classes, args, hold_ori, cur_pos,
                                         tracker=tracker)

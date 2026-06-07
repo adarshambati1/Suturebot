@@ -72,27 +72,29 @@ def parse_args() -> argparse.Namespace:
                    help=f"Redis key for 3D mesh render JPEG (default: {DEFAULT_3D_KEY})")
     p.add_argument("--depth-width", type=int, default=640, help="depth width (default 640)")
     p.add_argument("--depth-height", type=int, default=480, help="depth height (default 480)")
-    p.add_argument("--render-width", type=int, default=480,
-                   help="3D render output width (default 480)")
-    p.add_argument("--render-height", type=int, default=360,
-                   help="3D render output height (default 360)")
-    p.add_argument("--depth-step", type=int, default=2,
+    p.add_argument("--render-width", type=int, default=640,
+                   help="3D render output width (default 640)")
+    p.add_argument("--render-height", type=int, default=480,
+                   help="3D render output height (default 480)")
+    p.add_argument("--depth-step", type=int, default=1,
                    help="subsample depth + color by this stride before meshing "
-                        "(default 2 -> 4x fewer vertices/triangles, big speedup, "
-                        "near-invisible quality drop). 1 = no subsampling.")
-    p.add_argument("--tilt-deg", type=float, default=60.0,
+                        "(default 1 = full quality). Set to 2 or 3 for big speedup "
+                        "if the threaded 3D rate is still too low.")
+    p.add_argument("--tilt-deg", type=float, default=35.0,
                    help="azimuth: orbit the view around Y by this many degrees "
-                        "(default 60 = strong side view). 0 = head-on, 90 = fully side.")
-    p.add_argument("--elevation-deg", type=float, default=30.0,
+                        "(default 35 = a comfortable 3/4 side view). "
+                        "0 = head-on, 90 = fully side.")
+    p.add_argument("--elevation-deg", type=float, default=20.0,
                    help="elevation: tilt the view DOWN by this many degrees "
-                        "(default 30). 0 = head-on, larger = more bird's-eye.")
+                        "(default 20). 0 = head-on, larger = more bird's-eye.")
     p.add_argument("--z-near", type=float, default=0.05,
                    help="discard mesh vertices closer than this in meters (default 0.05)")
     p.add_argument("--z-far", type=float, default=2.0,
                    help="discard mesh vertices farther than this in meters (default 2.0)")
-    p.add_argument("--max-edge", type=float, default=0.03,
+    p.add_argument("--max-edge", type=float, default=0.05,
                    help="drop triangles whose depth jump across an edge exceeds this in "
-                        "meters (default 0.03). Lower = sharper silhouettes, more holes.")
+                        "meters (default 0.05). Lower = sharper silhouettes, more holes. "
+                        "Larger = more continuous surfaces, may bridge across objects.")
     p.add_argument("--fov", type=float, default=55.0,
                    help="virtual camera field-of-view in degrees (default 55)")
     p.add_argument("--lit", action="store_true",
@@ -113,9 +115,11 @@ def parse_args() -> argparse.Namespace:
                    help="EMA smoothing on the auto-computed scene center; higher = "
                         "more stable, slower to follow scene changes (default 0.92)")
     p.add_argument("--3d-rotate", dest="threed_rotate",
-                   type=int, choices=[0, 90, 180, 270], default=0,
-                   help="rotate the rendered 3D image by this many degrees clockwise "
-                        "before publishing (default 0). Does NOT affect the 2D stream.")
+                   type=int, choices=[0, 90, 180, 270], default=270,
+                   help="rotate the rendered 3D image by this many degrees CLOCKWISE "
+                        "before publishing (default 270 = a 90-deg CCW correction so "
+                        "robot 'up' shifts scene 'down' in the 3D view, matching the "
+                        "natural up = up convention). Does NOT affect the 2D stream.")
     p.add_argument("--3d-vflip", dest="threed_vflip", action="store_true", default=False,
                    help="flip the rendered 3D image vertically before publishing "
                         "(top<->bottom). Off by default.")

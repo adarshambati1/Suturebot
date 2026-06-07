@@ -76,10 +76,11 @@ def parse_args() -> argparse.Namespace:
                    help="3D render output width (default 640)")
     p.add_argument("--render-height", type=int, default=480,
                    help="3D render output height (default 480)")
-    p.add_argument("--depth-step", type=int, default=1,
+    p.add_argument("--depth-step", type=int, default=2,
                    help="subsample depth + color by this stride before meshing "
-                        "(default 1 = full quality). Set to 2 or 3 for big speedup "
-                        "if the threaded 3D rate is still too low.")
+                        "(default 2 = 4x fewer vertices/triangles; quality drop is "
+                        "barely visible at the render resolution). Set to 1 for full "
+                        "mesh detail (slower), 3+ for further speedup.")
     p.add_argument("--tilt-deg", type=float, default=35.0,
                    help="azimuth: orbit the view around Y by this many degrees "
                         "(default 35 = a comfortable 3/4 side view). "
@@ -115,11 +116,9 @@ def parse_args() -> argparse.Namespace:
                    help="EMA smoothing on the auto-computed scene center; higher = "
                         "more stable, slower to follow scene changes (default 0.92)")
     p.add_argument("--3d-rotate", dest="threed_rotate",
-                   type=int, choices=[0, 90, 180, 270], default=270,
-                   help="rotate the rendered 3D image by this many degrees CLOCKWISE "
-                        "before publishing (default 270 = a 90-deg CCW correction so "
-                        "robot 'up' shifts scene 'down' in the 3D view, matching the "
-                        "natural up = up convention). Does NOT affect the 2D stream.")
+                   type=int, choices=[0, 90, 180, 270], default=180,
+                   help="rotate the rendered 3D image by this many degrees clockwise "
+                        "before publishing (default 180). Does NOT affect the 2D stream.")
     p.add_argument("--3d-vflip", dest="threed_vflip", action="store_true", default=False,
                    help="flip the rendered 3D image vertically before publishing "
                         "(top<->bottom). Off by default.")

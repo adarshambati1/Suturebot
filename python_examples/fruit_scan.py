@@ -518,7 +518,7 @@ class FruitTracker:
         self.vmin = 50           # min value
         self.min_area = 200      # px
         self.min_roundness = 0.45  # 4*pi*A/P^2; circle=1, arm/hand far lower
-        self.gate_px = 160       # once locked, reject blobs farther than this
+        self.gate_px = 220       # once locked, reject blobs farther than this
 
     def _learn(self, bgr, box):
         x1, y1, x2, y2 = (max(int(v), 0) for v in box)
@@ -823,6 +823,9 @@ def run_calibrate(r, model, classes, args):
     for k, (axis, deg) in enumerate(tilts):
         ori = start_ori if axis is None else _rot_about(axis, deg) @ start_ori
         move_to(r, base_pos, ori, MOVE_TIME, f"tilt {k + 1}/{len(tilts)} ({deg:+.0f}deg)")
+        # A tilt makes the fruit jump in the image, so let the tracker re-acquire
+        # (drop the spatial gate's last anchor) before re-centering.
+        tracker.last = None
         center_on_fruit(r, model, classes, args, ori, base_pos, J, tracker=tracker)
         f, p_cam, _ = grab_detection(r, model, classes, args, note=f"tilt {k + 1}",
                                      tracker=tracker)
@@ -984,9 +987,9 @@ def parse_args():
                         "skin/background; default 110)")
     p.add_argument("--color-hue-tol", type=int, default=12,
                    help="+/- hue band for colour tracking (default 12)")
-    p.add_argument("--color-gate", type=int, default=160,
+    p.add_argument("--color-gate", type=int, default=220,
                    help="once locked, reject colour blobs farther than this many "
-                        "pixels from the last position (default 160)")
+                        "pixels from the last position (default 220)")
     p.add_argument("--roi", nargs=4, type=int, metavar=("X", "Y", "W", "H"),
                    default=None, help="table region in pixels; default = full frame")
     p.add_argument("--approach-height", type=float, default=APPROACH_HEIGHT,

@@ -688,7 +688,7 @@ def _rot_about(axis, deg):
 
 
 def estimate_image_jacobian(r, model, classes, args, ori, base_pos,
-                            probe=0.02, settle=None, tracker=None):
+                            probe=0.015, settle=None, tracker=None):
     """Probe +probe m in world x then y, measure how the fruit pixel moves.
     Returns 2x2 J (d_pixel / d_world_xy), or None. Auto-captures the camera
     mounting sign so the servo never needs hand-set directions."""
@@ -712,16 +712,20 @@ def estimate_image_jacobian(r, model, classes, args, ori, base_pos,
 
 
 def center_on_fruit(r, model, classes, args, ori, pos, J,
-                    tol_px=18, gain=0.5, max_step=0.03, max_iter=15, settle=None,
-                    tracker=None):
-    """Translate in world XY until the fruit sits at the image centre."""
+                    tol_px=18, gain=0.5, max_step=0.02, max_iter=10, settle=None,
+                    tracker=None, max_wander=None):
+    """Translate in world XY until the fruit sits at the image centre. Won't move
+    the flange more than `max_wander` m from where it started (a leash so it
+    stays over the apple instead of drifting onto skin/background)."""
     settle = settle if settle is not None else MOVE_TIME
+    max_wander = max_wander if max_wander is not None else getattr(args, "max_wander", 0.08)
     try:
         Jinv = np.linalg.inv(J)
     except np.linalg.LinAlgError:
         print("[center] image Jacobian singular; skipping centering.")
         return pos
     pos = pos.copy()
+    pos0 = pos.copy()
     for it in range(max_iter):
         f, _, bgr = grab_detection(r, model, classes, args, tracker=tracker)
         if f is None:
@@ -736,7 +740,12 @@ def center_on_fruit(r, model, classes, args, ori, pos, J,
         n = np.linalg.norm(d_xy)
         if n > max_step:
             d_xy *= max_step / n
-        pos[0] += d_xy[0]; pos[1] += d_xy[1]
+        nxt = pos[:2] + d_xy
+        if np.linalg.norm(nxt - pos0[:2]) > max_wander:
+            print(f"[center] hit wander limit ({max_wander*100:.0f} cm); stopping "
+                  "to stay over the apple.")
+            return pos
+        pos[0], pos[1] = nxt
         move_to(r, pos, ori, settle,
                 f"center step {it + 1} (err {np.linalg.norm(err):.0f}px)")
     print("[center] hit max iterations (still off-centre).")
@@ -771,19 +780,23 @@ def run_calibrate(r, model, classes, args):
         print(f"[calib] seeded colour tracker at hue {tracker.h_center} "
               "(colour tracking active from the first frame).")
 
-    # 1) coarse: sweep to bring the fruit into view (YOLO learns its colour here).
-    poses = scan_grid(start_pos, args.half_extent[0], args.half_extent[1],
-                      args.grid[0], args.grid[1], start_pos[2])
-    print(f"[calib] sweeping {len(poses)} poses to find the fruit...")
-    found = False
-    for i, pose in enumerate(poses):
-        move_to(r, pose, start_ori, MOVE_TIME, f"find {i + 1}/{len(poses)}")
-        f, _, _ = grab_detection(r, model, classes, args, note="find", tracker=tracker)
-        if f is not None:
-            found = True
-            break
+    # 1) acquire. You position the arm over the apple first, so check the start
+    #    pose before moving anywhere; only sweep (small) if it isn't already seen.
+    move_to(r, start_pos, start_ori, MOVE_TIME, "checking start pose")
+    f, _, _ = grab_detection(r, model, classes, args, note="start", tracker=tracker)
+    found = f is not None
     if not found:
-        print("[calib] never saw the fruit during the sweep.")
+        poses = scan_grid(start_pos, args.half_extent[0], args.half_extent[1],
+                          args.grid[0], args.grid[1], start_pos[2])
+        print(f"[calib] not at start — sweeping {len(poses)} poses to find it...")
+        for i, pose in enumerate(poses):
+            move_to(r, pose, start_ori, MOVE_TIME, f"find {i + 1}/{len(poses)}")
+            f, _, _ = grab_detection(r, model, classes, args, note="find", tracker=tracker)
+            if f is not None:
+                found = True
+                break
+    if not found:
+        print("[calib] never saw the fruit. Position the arm over the apple first.")
         return
     if tracker.h_center is None:
         print("[calib] WARNING: colour not learned (only a colour-fallback hit?). "
@@ -982,10 +995,15 @@ def parse_args():
                    help="which point to place above the fruit: 'tool' = the "
                         "end-effector tip (EE_OFFSET_FLANGE, default), 'camera' = "
                         "the camera, 'flange' = the flange origin")
-    p.add_argument("--grid", nargs=2, type=int, metavar=("NX", "NY"), default=(3, 3),
-                   help="scan grid columns x rows (default 3 3)")
+    p.add_argument("--grid", nargs=2, type=int, metavar=("NX", "NY"), default=(2, 2),
+                   help="scan grid columns x rows (default 2 2)")
     p.add_argument("--half-extent", nargs=2, type=float, metavar=("HX", "HY"),
-                   default=(0.12, 0.12), help="half-width of scan sweep in x,y (m)")
+                   default=(0.05, 0.05),
+                   help="half-width of scan sweep in x,y (m, default 0.05 — small "
+                        "since you position the arm over the fruit first)")
+    p.add_argument("--max-wander", type=float, default=0.08,
+                   help="max metres the centering servo may move from where it "
+                        "started, so it stays over the fruit (default 0.08)")
     p.add_argument("--config-file", default=CONFIG_FILE_FOR_THIS_SCRIPT,
                    help="OpenSai XML this client should verify is running")
     p.add_argument("--no-robot", action="store_true",

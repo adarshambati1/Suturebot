@@ -496,6 +496,90 @@ def load_calibration():
 # ----------------------------------------------------------------------------
 # Detection + visual-servo centering (used by the scan run and calibration)
 # ----------------------------------------------------------------------------
+class FruitTracker:
+    """Acquire the fruit with YOLO, then lock onto it by colour. YOLO is reliable
+    from a distance but drops out when the camera is close/overhead (the fruit
+    fills the frame at an odd scale) — exactly the poses calibration/centering
+    need. Once YOLO sees it once, we learn its hue and track the coloured blob,
+    falling back to YOLO whenever it succeeds again."""
+
+    def __init__(self):
+        self.h_center = None     # learned hue (OpenCV 0..179)
+        self.last = None         # last (cx, cy) to disambiguate blobs
+
+    def _learn(self, bgr, box):
+        x1, y1, x2, y2 = (max(int(v), 0) for v in box)
+        crop = bgr[y1:y2, x1:x2]
+        if crop.size == 0:
+            return
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        h = hsv[..., 0].reshape(-1).astype(int)
+        s = hsv[..., 1].reshape(-1)
+        v = hsv[..., 2].reshape(-1)
+        m = (s > 60) & (v > 50) & ~((h >= 100) & (h <= 130))   # drop dull + blue strip
+        if int(m.sum()) < 30:
+            return
+        ang = np.deg2rad(h[m] * 2.0)                            # circular mean of hue
+        mean = np.arctan2(np.mean(np.sin(ang)), np.mean(np.cos(ang)))
+        self.h_center = int((np.rad2deg(mean) % 360) / 2.0)
+
+    def _mask(self, bgr, d=15, smin=60, vmin=50):
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        c = self.h_center
+        if c - d < 0 or c + d > 179:                            # red wraps around 0/179
+            m1 = cv2.inRange(hsv, np.array([0, smin, vmin]),
+                             np.array([(c + d) % 180, 255, 255]))
+            m2 = cv2.inRange(hsv, np.array([(c - d) % 180, smin, vmin]),
+                             np.array([179, 255, 255]))
+            return cv2.bitwise_or(m1, m2)
+        return cv2.inRange(hsv, np.array([c - d, smin, vmin]),
+                           np.array([c + d, 255, 255]))
+
+    def _color_detect(self, bgr, roi):
+        if self.h_center is None:
+            return None
+        mask = self._mask(bgr)
+        rx, ry, rw, rh = roi
+        roimask = np.zeros(mask.shape, np.uint8)
+        roimask[ry:ry + rh, rx:rx + rw] = 255
+        mask = cv2.bitwise_and(mask, roimask)
+        k = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cnts = [c for c in cnts if cv2.contourArea(c) >= 150]
+        if not cnts:
+            return None
+        if self.last is not None:
+            def cdist(c):
+                M = cv2.moments(c)
+                if M["m00"] == 0:
+                    return 1e9
+                return np.hypot(M["m10"] / M["m00"] - self.last[0],
+                                M["m01"] / M["m00"] - self.last[1])
+            best = min(cnts, key=cdist)
+        else:
+            best = max(cnts, key=cv2.contourArea)
+        M = cv2.moments(best)
+        if M["m00"] == 0:
+            return None
+        cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
+        x, y, w, h = cv2.boundingRect(best)
+        return {"label": "fruit(color)", "conf": 0.0,
+                "box": (x, y, x + w, y + h), "cx": cx, "cy": cy}
+
+    def detect(self, model, bgr, classes, conf, roi):
+        f = detect_fruit(model, bgr, roi, classes, conf)
+        if f is not None:
+            self._learn(bgr, f["box"])
+            self.last = (f["cx"], f["cy"])
+            return f
+        f = self._color_detect(bgr, roi)
+        if f is not None:
+            self.last = (f["cx"], f["cy"])
+        return f
+
+
 # Set True (by run_calibrate) to pop a diagnostic window at every detection.
 _VIS = False
 _VIS_WIN = "fruit_scan (calibrate)"
@@ -516,13 +600,17 @@ def _vis_calib(bgr, fruit, p_cam, note=""):
     return out
 
 
-def grab_detection(r, model, classes, args, note=""):
-    """Read a fresh frame; return (fruit, p_cam, bgr). fruit/p_cam may be None."""
+def grab_detection(r, model, classes, args, note="", tracker=None):
+    """Read a fresh frame; return (fruit, p_cam, bgr). fruit/p_cam may be None.
+    With a FruitTracker, acquire via YOLO then track by colour (robust close-up)."""
     bgr = fresh_color(r)
     if bgr is None:
         return None, None, None
     roi = tuple(args.roi) if args.roi else (0, 0, bgr.shape[1], bgr.shape[0])
-    fruit = detect_fruit(model, bgr, roi, classes, args.conf)
+    if tracker is not None:
+        fruit = tracker.detect(model, bgr, classes, args.conf, roi)
+    else:
+        fruit = detect_fruit(model, bgr, roi, classes, args.conf)
     p_cam = None
     if fruit is not None:
         intr = read_intrinsics(r)
@@ -549,13 +637,13 @@ def _rot_about(axis, deg):
 
 
 def estimate_image_jacobian(r, model, classes, args, ori, base_pos,
-                            probe=0.02, settle=None):
+                            probe=0.02, settle=None, tracker=None):
     """Probe +probe m in world x then y, measure how the fruit pixel moves.
     Returns 2x2 J (d_pixel / d_world_xy), or None. Auto-captures the camera
     mounting sign so the servo never needs hand-set directions."""
     settle = settle if settle is not None else MOVE_TIME
     move_to(r, base_pos, ori, settle, "probe base")
-    f0, _, _ = grab_detection(r, model, classes, args)
+    f0, _, _ = grab_detection(r, model, classes, args, tracker=tracker)
     if f0 is None:
         return None
     px0 = np.array([f0["cx"], f0["cy"]], float)
@@ -563,7 +651,7 @@ def estimate_image_jacobian(r, model, classes, args, ori, base_pos,
     for axis, name in ((0, "x"), (1, "y")):
         pp = base_pos.copy(); pp[axis] += probe
         move_to(r, pp, ori, settle, f"probe +{name}")
-        fi, _, _ = grab_detection(r, model, classes, args)
+        fi, _, _ = grab_detection(r, model, classes, args, tracker=tracker)
         if fi is None:
             move_to(r, base_pos, ori, settle, "probe back")
             return None
@@ -573,7 +661,8 @@ def estimate_image_jacobian(r, model, classes, args, ori, base_pos,
 
 
 def center_on_fruit(r, model, classes, args, ori, pos, J,
-                    tol_px=18, gain=0.5, max_step=0.03, max_iter=15, settle=None):
+                    tol_px=18, gain=0.5, max_step=0.03, max_iter=15, settle=None,
+                    tracker=None):
     """Translate in world XY until the fruit sits at the image centre."""
     settle = settle if settle is not None else MOVE_TIME
     try:
@@ -583,7 +672,7 @@ def center_on_fruit(r, model, classes, args, ori, pos, J,
         return pos
     pos = pos.copy()
     for it in range(max_iter):
-        f, _, bgr = grab_detection(r, model, classes, args)
+        f, _, bgr = grab_detection(r, model, classes, args, tracker=tracker)
         if f is None:
             print("[center] lost the fruit; stopping.")
             return pos
@@ -624,28 +713,37 @@ def run_calibrate(r, model, classes, args):
               f"'{REDIS_KEYS.rs_depth}'). Run the publisher WITHOUT --no-depth — "
               "calibration needs depth at the fruit pixel.")
 
-    # 1) coarse: sweep to bring the fruit into view.
+    # Acquire with YOLO from a distance, then track by colour (robust when the
+    # camera gets close/overhead and YOLO can no longer recognise the fruit).
+    tracker = FruitTracker()
+
+    # 1) coarse: sweep to bring the fruit into view (YOLO learns its colour here).
     poses = scan_grid(start_pos, args.half_extent[0], args.half_extent[1],
                       args.grid[0], args.grid[1], start_pos[2])
     print(f"[calib] sweeping {len(poses)} poses to find the fruit...")
     found = False
     for i, pose in enumerate(poses):
         move_to(r, pose, start_ori, MOVE_TIME, f"find {i + 1}/{len(poses)}")
-        f, _, _ = grab_detection(r, model, classes, args)
+        f, _, _ = grab_detection(r, model, classes, args, note="find", tracker=tracker)
         if f is not None:
             found = True
             break
     if not found:
         print("[calib] never saw the fruit during the sweep.")
         return
+    if tracker.h_center is None:
+        print("[calib] WARNING: colour not learned (only a colour-fallback hit?). "
+              "Start with the fruit clearly in view so YOLO acquires it once.")
 
     # 2) centre it so tilts keep it in frame.
     base_pos, _ = read_actual_pose(r)
-    J = estimate_image_jacobian(r, model, classes, args, start_ori, base_pos)
+    J = estimate_image_jacobian(r, model, classes, args, start_ori, base_pos,
+                                tracker=tracker)
     if J is None:
         print("[calib] could not estimate image Jacobian (lost fruit).")
         return
-    base_pos = center_on_fruit(r, model, classes, args, start_ori, base_pos, J)
+    base_pos = center_on_fruit(r, model, classes, args, start_ori, base_pos, J,
+                               tracker=tracker)
 
     # 3) collect (R_flange, p_flange, p_cam) over a spread of tilts; re-centre
     #    after each tilt so the fruit stays visible (and adds position variety).
@@ -658,8 +756,9 @@ def run_calibrate(r, model, classes, args):
     for k, (axis, deg) in enumerate(tilts):
         ori = start_ori if axis is None else _rot_about(axis, deg) @ start_ori
         move_to(r, base_pos, ori, MOVE_TIME, f"tilt {k + 1}/{len(tilts)} ({deg:+.0f}deg)")
-        center_on_fruit(r, model, classes, args, ori, base_pos, J)
-        f, p_cam, _ = grab_detection(r, model, classes, args, note=f"tilt {k + 1}")
+        center_on_fruit(r, model, classes, args, ori, base_pos, J, tracker=tracker)
+        f, p_cam, _ = grab_detection(r, model, classes, args, note=f"tilt {k + 1}",
+                                     tracker=tracker)
         if f is None:
             print(f"       tilt {k + 1}: NO FRUIT in view after tilt — skipping "
                   "(tilt may be too large / fruit left frame).")
@@ -948,11 +1047,16 @@ def main():
         # Optional: visual-servo the fruit to the image centre before locating,
         # so the depth reading is on-axis and the placement is most accurate.
         if fruit is not None and args.center:
+            tracker = FruitTracker()
+            tracker._learn(scan_frame, fruit["box"])   # seed colour from the YOLO hit
+            tracker.last = (fruit["cx"], fruit["cy"])
             cur_pos, _ = read_actual_pose(r)
-            J = estimate_image_jacobian(r, model, classes, args, hold_ori, cur_pos)
+            J = estimate_image_jacobian(r, model, classes, args, hold_ori, cur_pos,
+                                        tracker=tracker)
             if J is not None:
-                center_on_fruit(r, model, classes, args, hold_ori, cur_pos, J)
-                f2, _, frame2 = grab_detection(r, model, classes, args)
+                center_on_fruit(r, model, classes, args, hold_ori, cur_pos, J,
+                                tracker=tracker)
+                f2, _, frame2 = grab_detection(r, model, classes, args, tracker=tracker)
                 if f2 is not None:
                     fruit, scan_frame = f2, frame2
                     print(f"       centred on {fruit['label']} at pixel "

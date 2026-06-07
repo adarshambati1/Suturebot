@@ -344,6 +344,320 @@ def cam_to_world(p_cam, flange_pos, flange_ori):
 
 
 # ----------------------------------------------------------------------------
+# Hand-eye calibration (auto-solve T_FLANGE_CAM from the arm watching one fruit)
+# ----------------------------------------------------------------------------
+# Model: the fruit is a single fixed world point P. At calibration pose i the arm
+# reports flange pose (R_i, p_i) and the camera measures the fruit at camera-frame
+# point q_i. They are tied by
+#       p_i + R_i @ (R_fc @ q_i + t_fc) = P                         (for all i)
+# where (R_fc, t_fc) = T_FLANGE_CAM (camera-in-flange) is what we solve for, along
+# with the unknown fruit position P. Unknowns: R_fc (3) + t_fc (3) + P (3) = 9.
+# Each pose gives 3 equations, so >=3 poses WITH ORIENTATION VARIETY are needed to
+# separate R_fc from P (pure translation leaves the tilt unobservable). Solved by
+# Levenberg-Marquardt with a numeric Jacobian (rotation parametrised by a Rodrigues
+# vector via cv2.Rodrigues) — needs only numpy + cv2.
+def _handeye_residuals(params, Rs, ps, qs):
+    R_fc, _ = cv2.Rodrigues(params[0:3])
+    t_fc = params[3:6]
+    P = params[6:9]
+    res = np.empty(3 * len(Rs))
+    for i, (R_i, p_i, q_i) in enumerate(zip(Rs, ps, qs)):
+        res[3 * i:3 * i + 3] = (p_i + R_i @ (R_fc @ q_i + t_fc)) - P
+    return res
+
+
+def _handeye_jacobian(params, Rs, ps, qs, eps=1e-6):
+    r0 = _handeye_residuals(params, Rs, ps, qs)
+    J = np.empty((r0.size, params.size))
+    for k in range(params.size):
+        dp = params.copy()
+        dp[k] += eps
+        J[:, k] = (_handeye_residuals(dp, Rs, ps, qs) - r0) / eps
+    return J, r0
+
+
+def solve_hand_eye(records, iters=300):
+    """records: list of (R_flange 3x3, p_flange 3, p_cam 3).
+    Returns (R_fc 3x3, t_fc 3, P 3, rms_metres)."""
+    Rs = [np.asarray(r[0], float) for r in records]
+    ps = [np.asarray(r[1], float) for r in records]
+    qs = [np.asarray(r[2], float) for r in records]
+    # init: identity rotation, a small +z offset, P from the mean prediction.
+    rvec = np.zeros(3)
+    t_fc = np.array([0.0, 0.0, 0.05])
+    R0, _ = cv2.Rodrigues(rvec)
+    P = np.mean([p + R @ (R0 @ q + t_fc) for R, p, q in zip(Rs, ps, qs)], axis=0)
+    x = np.concatenate([rvec, t_fc, P])
+    lam = 1e-3
+    cost = float(_handeye_residuals(x, Rs, ps, qs) @ _handeye_residuals(x, Rs, ps, qs))
+    for _ in range(iters):
+        J, r = _handeye_jacobian(x, Rs, ps, qs)
+        A = J.T @ J + lam * np.eye(x.size)
+        g = J.T @ r
+        try:
+            dx = np.linalg.solve(A, -g)
+        except np.linalg.LinAlgError:
+            break
+        x_new = x + dx
+        new_cost = float(_handeye_residuals(x_new, Rs, ps, qs) @
+                         _handeye_residuals(x_new, Rs, ps, qs))
+        if new_cost < cost:                  # accept the step
+            improved = cost - new_cost
+            x, cost = x_new, new_cost
+            lam = max(lam * 0.5, 1e-12)
+            if improved < 1e-15:             # converged
+                break
+        else:                                # reject: damp harder and retry
+            lam = min(lam * 3.0, 1e8)
+            if lam >= 1e8:
+                break
+    R_fc, _ = cv2.Rodrigues(x[0:3])
+    res = _handeye_residuals(x, Rs, ps, qs).reshape(-1, 3)
+    rms = float(np.sqrt(np.mean(np.sum(res ** 2, axis=1))))
+    return R_fc, x[3:6], x[6:9], rms
+
+
+def _orientation_spread(records):
+    """Rough measure (radians) of how much the flange orientation varied across
+    calibration poses — near 0 means pure translation (tilt unobservable)."""
+    Rs = [np.asarray(r[0], float) for r in records]
+    R_mean = Rs[0]
+    angs = []
+    for R in Rs:
+        rvec, _ = cv2.Rodrigues(R @ R_mean.T)
+        angs.append(float(np.linalg.norm(rvec)))
+    return max(angs) if angs else 0.0
+
+
+def selftest_calibration():
+    """Validate the solver locally with synthetic noisy data (no robot/camera)."""
+    rng = np.random.default_rng(0)
+    # Ground-truth camera-in-flange: ~22 deg down-tilt about flange X, jut +4cm
+    # forward / +5cm down.
+    true_rvec = np.array([np.deg2rad(22.0), 0.0, 0.0])
+    R_true, _ = cv2.Rodrigues(true_rvec)
+    t_true = np.array([0.00, 0.04, 0.05])
+    P_true = np.array([0.55, 0.00, 0.05])         # fruit world position
+
+    records = []
+    for _ in range(12):
+        # random-ish flange orientation near camera-down with tilts
+        rv = np.array([np.deg2rad(180.0), 0.0, 0.0]) + rng.normal(0, 0.20, 3)
+        R_i, _ = cv2.Rodrigues(rv)
+        p_i = np.array([0.5, 0.0, 0.45]) + rng.normal(0, 0.03, 3)
+        # exact camera-frame measurement of the fruit, then add pixel/depth noise
+        q_i = R_true.T @ (R_i.T @ (P_true - p_i) - t_true)
+        q_i = q_i + rng.normal(0, 0.002, 3)        # ~2mm measurement noise
+        records.append((R_i, p_i, q_i))
+
+    R_fc, t_fc, P, rms = solve_hand_eye(records)
+    rvec_est, _ = cv2.Rodrigues(R_fc)
+    ang_err = np.rad2deg(np.linalg.norm(
+        cv2.Rodrigues(R_fc @ R_true.T)[0]))
+    print("=== hand-eye solver self-test (synthetic) ===")
+    print(f"orientation spread used: {np.rad2deg(_orientation_spread(records)):.1f} deg")
+    print(f"true  t_fc = {np.round(t_true, 4)}   est t_fc = {np.round(t_fc, 4)}")
+    print(f"true  tilt = 22.0 deg about X   est rvec(deg) = {np.round(np.rad2deg(rvec_est), 2)}")
+    print(f"rotation error  = {ang_err:.2f} deg")
+    print(f"t_fc error      = {np.linalg.norm(t_fc - t_true)*1000:.1f} mm")
+    print(f"fruit P error   = {np.linalg.norm(P - P_true)*1000:.1f} mm")
+    print(f"residual rms    = {rms*1000:.2f} mm")
+    ok = ang_err < 2.0 and np.linalg.norm(t_fc - t_true) < 0.01
+    print("RESULT:", "PASS" if ok else "FAIL")
+    return ok
+
+
+# ----------------------------------------------------------------------------
+# Calibration persistence (solved T_FLANGE_CAM auto-loads on every run)
+# ----------------------------------------------------------------------------
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CALIB_PATH = os.path.join(_REPO_ROOT, "calibration", "t_flange_cam.json")
+
+
+def save_calibration(T, rms, n):
+    os.makedirs(os.path.dirname(CALIB_PATH), exist_ok=True)
+    with open(CALIB_PATH, "w") as f:
+        json.dump({"T_FLANGE_CAM": np.asarray(T).tolist(),
+                   "rms_mm": rms * 1000.0, "n_poses": n}, f, indent=2)
+    return CALIB_PATH
+
+
+def load_calibration():
+    if not os.path.exists(CALIB_PATH):
+        return None
+    try:
+        with open(CALIB_PATH) as f:
+            return np.array(json.load(f)["T_FLANGE_CAM"], float)
+    except Exception as e:
+        print(f"[calib] could not read {CALIB_PATH}: {e}")
+        return None
+
+
+# ----------------------------------------------------------------------------
+# Detection + visual-servo centering (used by the scan run and calibration)
+# ----------------------------------------------------------------------------
+def grab_detection(r, model, classes, args):
+    """Read a fresh frame; return (fruit, p_cam, bgr). fruit/p_cam may be None."""
+    bgr = fresh_color(r)
+    if bgr is None:
+        return None, None, None
+    roi = tuple(args.roi) if args.roi else (0, 0, bgr.shape[1], bgr.shape[0])
+    fruit = detect_fruit(model, bgr, roi, classes, args.conf)
+    if fruit is None:
+        return None, None, bgr
+    intr = read_intrinsics(r)
+    p_cam = None
+    if intr is not None:
+        depth_u16, _ = read_depth(r)
+        z = sample_depth_m(depth_u16, fruit["cx"], fruit["cy"],
+                           intr.get("depth_scale", 0.001))
+        if z is not None:
+            p_cam = deproject(fruit["cx"], fruit["cy"], z, intr)
+    return fruit, p_cam, bgr
+
+
+def _rot_about(axis, deg):
+    v = np.asarray(axis, float)
+    v = v / np.linalg.norm(v) * np.deg2rad(deg)
+    R, _ = cv2.Rodrigues(v)
+    return R
+
+
+def estimate_image_jacobian(r, model, classes, args, ori, base_pos,
+                            probe=0.02, settle=None):
+    """Probe +probe m in world x then y, measure how the fruit pixel moves.
+    Returns 2x2 J (d_pixel / d_world_xy), or None. Auto-captures the camera
+    mounting sign so the servo never needs hand-set directions."""
+    settle = settle if settle is not None else MOVE_TIME
+    move_to(r, base_pos, ori, settle, "probe base")
+    f0, _, _ = grab_detection(r, model, classes, args)
+    if f0 is None:
+        return None
+    px0 = np.array([f0["cx"], f0["cy"]], float)
+    cols = []
+    for axis, name in ((0, "x"), (1, "y")):
+        pp = base_pos.copy(); pp[axis] += probe
+        move_to(r, pp, ori, settle, f"probe +{name}")
+        fi, _, _ = grab_detection(r, model, classes, args)
+        if fi is None:
+            move_to(r, base_pos, ori, settle, "probe back")
+            return None
+        cols.append((np.array([fi["cx"], fi["cy"]], float) - px0) / probe)
+    move_to(r, base_pos, ori, settle, "probe back")
+    return np.column_stack(cols)
+
+
+def center_on_fruit(r, model, classes, args, ori, pos, J,
+                    tol_px=18, gain=0.5, max_step=0.03, max_iter=15, settle=None):
+    """Translate in world XY until the fruit sits at the image centre."""
+    settle = settle if settle is not None else MOVE_TIME
+    try:
+        Jinv = np.linalg.inv(J)
+    except np.linalg.LinAlgError:
+        print("[center] image Jacobian singular; skipping centering.")
+        return pos
+    pos = pos.copy()
+    for it in range(max_iter):
+        f, _, bgr = grab_detection(r, model, classes, args)
+        if f is None:
+            print("[center] lost the fruit; stopping.")
+            return pos
+        h, w = bgr.shape[:2]
+        err = np.array([f["cx"] - w / 2.0, f["cy"] - h / 2.0])
+        if np.linalg.norm(err) < tol_px:
+            print(f"[center] centred (err {np.linalg.norm(err):.0f}px) in {it} steps.")
+            return pos
+        d_xy = -gain * (Jinv @ err)
+        n = np.linalg.norm(d_xy)
+        if n > max_step:
+            d_xy *= max_step / n
+        pos[0] += d_xy[0]; pos[1] += d_xy[1]
+        move_to(r, pos, ori, settle,
+                f"center step {it + 1} (err {np.linalg.norm(err):.0f}px)")
+    print("[center] hit max iterations (still off-centre).")
+    return pos
+
+
+# ----------------------------------------------------------------------------
+# Auto hand-eye calibration routine
+# ----------------------------------------------------------------------------
+def run_calibrate(r, model, classes, args):
+    if not verify_and_activate(r, args.config_file):
+        return
+    if read_intrinsics(r) is None:
+        print("[calib] no intrinsics on Redis — start realsense_publisher.py.")
+        return
+    start_pos, start_ori = read_actual_pose(r)
+    if start_pos is None:
+        print("[calib] cannot read robot pose; is the controller running?")
+        return
+
+    # 1) coarse: sweep to bring the fruit into view.
+    poses = scan_grid(start_pos, args.half_extent[0], args.half_extent[1],
+                      args.grid[0], args.grid[1], start_pos[2])
+    print(f"[calib] sweeping {len(poses)} poses to find the fruit...")
+    found = False
+    for i, pose in enumerate(poses):
+        move_to(r, pose, start_ori, MOVE_TIME, f"find {i + 1}/{len(poses)}")
+        f, _, _ = grab_detection(r, model, classes, args)
+        if f is not None:
+            found = True
+            break
+    if not found:
+        print("[calib] never saw the fruit during the sweep.")
+        return
+
+    # 2) centre it so tilts keep it in frame.
+    base_pos, _ = read_actual_pose(r)
+    J = estimate_image_jacobian(r, model, classes, args, start_ori, base_pos)
+    if J is None:
+        print("[calib] could not estimate image Jacobian (lost fruit).")
+        return
+    base_pos = center_on_fruit(r, model, classes, args, start_ori, base_pos, J)
+
+    # 3) collect (R_flange, p_flange, p_cam) over a spread of tilts; re-centre
+    #    after each tilt so the fruit stays visible (and adds position variety).
+    tilts = [(None, 0.0),
+             ([1, 0, 0], +args.calib_tilt), ([1, 0, 0], -args.calib_tilt),
+             ([0, 1, 0], +args.calib_tilt), ([0, 1, 0], -args.calib_tilt),
+             ([1, 1, 0], +args.calib_tilt * 0.7), ([1, -1, 0], +args.calib_tilt * 0.7),
+             ([1, 1, 0], -args.calib_tilt * 0.7), ([1, -1, 0], -args.calib_tilt * 0.7)]
+    records = []
+    for k, (axis, deg) in enumerate(tilts):
+        ori = start_ori if axis is None else _rot_about(axis, deg) @ start_ori
+        move_to(r, base_pos, ori, MOVE_TIME, f"tilt {k + 1}/{len(tilts)} ({deg:+.0f}deg)")
+        pos = center_on_fruit(r, model, classes, args, ori, base_pos, J)
+        f, p_cam, _ = grab_detection(r, model, classes, args)
+        if p_cam is None:
+            print(f"       tilt {k + 1}: no valid depth/detection, skipping.")
+            continue
+        cur_pos, cur_ori = read_actual_pose(r)
+        records.append((cur_ori, cur_pos, p_cam))
+        print(f"       tilt {k + 1}: recorded (cam xyz "
+              f"{p_cam[0]:+.3f},{p_cam[1]:+.3f},{p_cam[2]:+.3f})")
+
+    spread = np.rad2deg(_orientation_spread(records)) if records else 0.0
+    print(f"[calib] collected {len(records)} poses, orientation spread {spread:.1f} deg")
+    if len(records) < 4:
+        print("[calib] too few good poses to solve (need >=4). Aborting.")
+        return
+    if spread < 5.0:
+        print("[calib] WARNING: little orientation variety — tilt result may be poor.")
+
+    # 4) solve + save.
+    R_fc, t_fc, P, rms = solve_hand_eye(records)
+    T = np.eye(4); T[:3, :3] = R_fc; T[:3, 3] = t_fc
+    rvec, _ = cv2.Rodrigues(R_fc)
+    print(f"[calib] solved T_FLANGE_CAM: t_fc={np.round(t_fc, 4)} m, "
+          f"tilt={np.round(np.rad2deg(rvec), 1)} deg, residual rms={rms * 1000:.1f} mm")
+    if rms > 0.02:
+        print("[calib] WARNING: residual > 20 mm — detection/depth may be noisy; "
+              "consider re-running.")
+    path = save_calibration(T, rms, len(records))
+    print(f"[calib] saved -> {path} (auto-loads on future runs).")
+
+
+# ----------------------------------------------------------------------------
 # Annotation
 # ----------------------------------------------------------------------------
 def annotate(bgr, roi, fruit, strip, target_world, cam_point):
@@ -486,11 +800,29 @@ def parse_args():
                         "robot motion (preview only).")
     p.add_argument("--save-dir", default="log_files/vision_logs",
                    help="where to write the annotated overlay")
+    # Calibration / centering -----------------------------------------------------
+    p.add_argument("--calibrate", action="store_true",
+                   help="auto-solve the camera->wrist transform (T_FLANGE_CAM): "
+                        "find the fruit, view it from several tilts, solve, and "
+                        "save to calibration/t_flange_cam.json (auto-loaded after).")
+    p.add_argument("--calib-tilt", type=float, default=12.0,
+                   help="max wrist tilt in degrees used during --calibrate (default 12)")
+    p.add_argument("--center", action="store_true",
+                   help="before placing the tool, visual-servo the fruit to the "
+                        "image centre (more accurate, needs a calibrated camera)")
+    p.add_argument("--selftest-calib", action="store_true",
+                   help="run the hand-eye solver on synthetic data and exit "
+                        "(no robot/camera needed)")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    # Self-test needs neither robot nor camera — run and exit.
+    if args.selftest_calib:
+        selftest_calibration()
+        return
+
     classes = set(args.classes)
     use_robot = not (args.no_robot or args.image)
 
@@ -501,7 +833,22 @@ def main():
         print(f"Cannot reach Redis at {args.host}:{args.port}.", file=sys.stderr)
         sys.exit(1)
 
+    # Auto-load a saved hand-eye calibration over the placeholder, if present.
+    global T_FLANGE_CAM
+    loaded = load_calibration()
+    if loaded is not None:
+        T_FLANGE_CAM = loaded
+        print(f"[calib] loaded T_FLANGE_CAM from {CALIB_PATH}")
+    elif not args.image:
+        print("[calib] no saved calibration — using placeholder T_FLANGE_CAM "
+              "(run --calibrate for accuracy).")
+
     model = load_model(args.model)
+
+    # Calibration is a standalone mode (moves the robot, solves, saves, exits).
+    if args.calibrate:
+        run_calibrate(r, model, classes, args)
+        return
 
     # Live preview is a standalone mode: no robot, no XML check, no scan.
     if args.live:
@@ -560,6 +907,21 @@ def main():
                       f"at pixel ({fruit['cx']}, {fruit['cy']})")
                 break
             print("       no fruit in view")
+
+        # Optional: visual-servo the fruit to the image centre before locating,
+        # so the depth reading is on-axis and the placement is most accurate.
+        if fruit is not None and args.center:
+            cur_pos, _ = read_actual_pose(r)
+            J = estimate_image_jacobian(r, model, classes, args, hold_ori, cur_pos)
+            if J is not None:
+                center_on_fruit(r, model, classes, args, hold_ori, cur_pos, J)
+                f2, _, frame2 = grab_detection(r, model, classes, args)
+                if f2 is not None:
+                    fruit, scan_frame = f2, frame2
+                    print(f"       centred on {fruit['label']} at pixel "
+                          f"({fruit['cx']}, {fruit['cy']})")
+            else:
+                print("       [center] Jacobian probe failed; skipping centering.")
 
     roi = tuple(args.roi) if args.roi else (0, 0, scan_frame.shape[1], scan_frame.shape[0])
 

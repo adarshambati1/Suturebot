@@ -20,6 +20,9 @@ build/
 # OpenSai runtime
 log_files/
 
+# Machine-specific hand-eye calibration (created by fruit_scan.py --calibrate)
+calibration/
+
 # Unity (vr_teleop/SuturebotVR — created locally by Unity Hub)
 vr_teleop/SuturebotVR/Library/
 vr_teleop/SuturebotVR/Temp/

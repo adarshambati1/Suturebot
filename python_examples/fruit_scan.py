@@ -393,6 +393,48 @@ def scan_grid(center, half_x, half_y, nx, ny, height):
 
 
 # ----------------------------------------------------------------------------
+# Live preview
+# ----------------------------------------------------------------------------
+def run_live(r, model, classes, args):
+    """Continuously read the latest Redis frame, run detection, and refresh a
+    window with the YOLO box + blue strip drawn. Preview only — no robot motion.
+    Press 'q' (or Esc) to quit."""
+    intr = read_intrinsics(r)
+    print("[live] preview — press 'q' in the window to quit.")
+    win = "fruit_scan (live)"
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    while True:
+        bgr, ts = read_color(r)
+        if bgr is None:
+            time.sleep(0.05)
+            continue
+        roi = tuple(args.roi) if args.roi else (0, 0, bgr.shape[1], bgr.shape[0])
+        fruit = detect_fruit(model, bgr, roi, classes, args.conf)
+        strip = (detect_blue_strip(bgr, fruit["box"], BLUE_HSV_LO, BLUE_HSV_HI)
+                 if fruit is not None else None)
+        cam_point = None
+        if fruit is not None and intr is not None:
+            depth_u16, _ = read_depth(r)
+            z = sample_depth_m(depth_u16, fruit["cx"], fruit["cy"],
+                               intr.get("depth_scale", 0.001))
+            if z is not None:
+                cam_point = deproject(fruit["cx"], fruit["cy"], z, intr)
+        out = annotate(bgr, roi, fruit, strip, None, cam_point)
+        # frame-age HUD so you can see if the publisher stalls
+        age = (time.time() - ts) if ts else None
+        hud = "no fruit" if fruit is None else f"{fruit['label']} {fruit['conf']:.2f}"
+        if age is not None:
+            hud += f"   frame age {age:4.2f}s"
+        cv2.putText(out, hud, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.imshow(win, out)
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord("q"), 27):   # q or Esc
+            break
+    cv2.destroyAllWindows()
+
+
+# ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
 def parse_args():
@@ -423,7 +465,12 @@ def parse_args():
     p.add_argument("--assume-depth", type=float, default=0.30,
                    help="fallback fruit depth in metres when no depth frame is "
                         "available (--image mode, or missing depth pixel)")
-    p.add_argument("--show", action="store_true", help="pop a live OpenCV window")
+    p.add_argument("--show", action="store_true",
+                   help="pop a window with the single analyzed frame (blocks until a key)")
+    p.add_argument("--live", action="store_true",
+                   help="continuous preview: loop reading the latest Redis frame, "
+                        "draw YOLO box + blue strip live, refresh until 'q'. No "
+                        "robot motion (preview only).")
     p.add_argument("--save-dir", default="log_files/vision_logs",
                    help="where to write the annotated overlay")
     return p.parse_args()
@@ -441,10 +488,16 @@ def main():
         print(f"Cannot reach Redis at {args.host}:{args.port}.", file=sys.stderr)
         sys.exit(1)
 
+    model = load_model(args.model)
+
+    # Live preview is a standalone mode: no robot, no XML check, no scan.
+    if args.live:
+        run_live(r, model, classes, args)
+        return
+
     if use_robot and not verify_and_activate(r, args.config_file):
         sys.exit(1)
 
-    model = load_model(args.model)
     intr = None if args.image else read_intrinsics(r)
 
     # --- SCAN -----------------------------------------------------------------

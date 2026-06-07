@@ -122,6 +122,15 @@ T_FLANGE_CAM = np.array([
     [0.0, 0.0, 0.0,  1.000],
 ])
 
+# End-effector (tool) working point expressed in the FLANGE frame, metres. This
+# is the point you want placed above the fruit when --align tool (default). It is
+# the analogue of NEEDLE_TIP_OFFSET / JAWS_OFFSET in the stitch clients (~0.28 m
+# out along the tool axis). PLACEHOLDER — calibrate to your passive end-effector;
+# cross-check against suturebot_grav_stitch_oussama_push_grip.py's offsets. Note
+# those are written in a world-aligned frame and converted with ORI.T; here the
+# vector is already in the flange frame (p_world = flange_pos + flange_ori @ EE).
+EE_OFFSET_FLANGE = np.array([0.0613, 0.0015, -0.2826])
+
 # Fruit classes to accept (COCO names as used by ultralytics models).
 DEFAULT_FRUIT_CLASSES = ("apple", "orange", "banana")
 
@@ -450,6 +459,10 @@ def parse_args():
                    default=None, help="table region in pixels; default = full frame")
     p.add_argument("--approach-height", type=float, default=APPROACH_HEIGHT,
                    help="metres to hover above the detected fruit")
+    p.add_argument("--align", choices=["tool", "flange", "camera"], default="tool",
+                   help="which point to place above the fruit: 'tool' = the "
+                        "end-effector tip (EE_OFFSET_FLANGE, default), 'camera' = "
+                        "the camera, 'flange' = the flange origin")
     p.add_argument("--grid", nargs=2, type=int, metavar=("NX", "NY"), default=(3, 3),
                    help="scan grid columns x rows (default 3 3)")
     p.add_argument("--half-extent", nargs=2, type=float, metavar=("HX", "HY"),
@@ -588,12 +601,28 @@ def main():
             flange_pos, flange_ori = read_actual_pose(r)
             if flange_pos is not None:
                 fruit_world = cam_to_world(cam_point, flange_pos, flange_ori)
-                target_world = fruit_world + np.array([0.0, 0.0, args.approach_height])
+                # Where we want the CHOSEN point (tool / camera / flange) to be.
+                desired = fruit_world + np.array([0.0, 0.0, args.approach_height])
+                # That point's offset in the flange frame:
+                #   tool   -> EE_OFFSET_FLANGE
+                #   camera -> camera origin in flange = T_FLANGE_CAM translation
+                #   flange -> zero
+                if args.align == "tool":
+                    offset_in_flange = EE_OFFSET_FLANGE
+                elif args.align == "camera":
+                    offset_in_flange = T_FLANGE_CAM[:3, 3]
+                else:  # flange
+                    offset_in_flange = np.zeros(3)
+                # Command the flange so the chosen point lands on `desired`:
+                #   desired = flange_goal + flange_ori @ offset_in_flange
+                target_world = desired - flange_ori @ offset_in_flange
                 print(f"[locate] fruit world xyz   = "
                       f"({fruit_world[0]:+.3f}, {fruit_world[1]:+.3f}, {fruit_world[2]:+.3f}) m")
-                print(f"[locate] hover target xyz  = "
+                print(f"[locate] aligning '{args.align}' {args.approach_height:.3f} m "
+                      f"above the fruit -> flange goal "
                       f"({target_world[0]:+.3f}, {target_world[1]:+.3f}, {target_world[2]:+.3f}) m"
-                      f"  (note: depends on T_FLANGE_CAM calibration)")
+                      f"  (depends on T_FLANGE_CAM"
+                      f"{' + EE_OFFSET_FLANGE' if args.align == 'tool' else ''} calibration)")
 
     # --- overlay --------------------------------------------------------------
     out = annotate(scan_frame, roi, fruit, strip, target_world, cam_point)
@@ -605,7 +634,19 @@ def main():
     # --- HOVER ----------------------------------------------------------------
     if use_robot and target_world is not None:
         move_to(r, target_world, hold_ori, MOVE_TIME, "hover above fruit")
-        print("[done] robot positioned above the fruit.")
+        # Verify where the chosen point actually ended up vs the fruit.
+        act_pos, act_ori = read_actual_pose(r)
+        if act_pos is not None:
+            offsets = {"tool": EE_OFFSET_FLANGE,
+                       "camera": T_FLANGE_CAM[:3, 3],
+                       "flange": np.zeros(3)}
+            pt = act_pos + act_ori @ offsets[args.align]
+            print(f"[verify] {args.align} now at "
+                  f"({pt[0]:+.3f}, {pt[1]:+.3f}, {pt[2]:+.3f}) m; fruit at "
+                  f"({fruit_world[0]:+.3f}, {fruit_world[1]:+.3f}, {fruit_world[2]:+.3f}) m "
+                  f"-> xy offset ({pt[0] - fruit_world[0]:+.3f}, {pt[1] - fruit_world[1]:+.3f}) m, "
+                  f"height +{pt[2] - fruit_world[2]:.3f} m")
+        print(f"[done] robot positioned with the {args.align} above the fruit.")
     elif use_robot:
         print("[done] scan complete, but no 3D target computed — robot left in place.")
     else:

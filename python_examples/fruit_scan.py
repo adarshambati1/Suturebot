@@ -511,6 +511,14 @@ class FruitTracker:
     def __init__(self):
         self.h_center = None     # learned hue (OpenCV 0..179)
         self.last = None         # last (cx, cy) to disambiguate blobs
+        # Discriminators against skin (skin overlaps orange/red in hue): require
+        # high saturation, roundness, and proximity to the last lock.
+        self.hue_tol = 12        # +/- hue band
+        self.smin = 110          # min saturation (apples vivid; skin duller)
+        self.vmin = 50           # min value
+        self.min_area = 200      # px
+        self.min_roundness = 0.45  # 4*pi*A/P^2; circle=1, arm/hand far lower
+        self.gate_px = 160       # once locked, reject blobs farther than this
 
     def _learn(self, bgr, box):
         x1, y1, x2, y2 = (max(int(v), 0) for v in box)
@@ -528,9 +536,9 @@ class FruitTracker:
         mean = np.arctan2(np.mean(np.sin(ang)), np.mean(np.cos(ang)))
         self.h_center = int((np.rad2deg(mean) % 360) / 2.0)
 
-    def _mask(self, bgr, d=15, smin=60, vmin=50):
+    def _mask(self, bgr):
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        c = self.h_center
+        c, d, smin, vmin = self.h_center, self.hue_tol, self.smin, self.vmin
         if c - d < 0 or c + d > 179:                            # red wraps around 0/179
             m1 = cv2.inRange(hsv, np.array([0, smin, vmin]),
                              np.array([(c + d) % 180, 255, 255]))
@@ -539,6 +547,19 @@ class FruitTracker:
             return cv2.bitwise_or(m1, m2)
         return cv2.inRange(hsv, np.array([c - d, smin, vmin]),
                            np.array([c + d, 255, 255]))
+
+    @staticmethod
+    def _centroid(c):
+        M = cv2.moments(c)
+        if M["m00"] == 0:
+            return None
+        return (M["m10"] / M["m00"], M["m01"] / M["m00"])
+
+    @staticmethod
+    def _roundness(c):
+        a = cv2.contourArea(c)
+        p = cv2.arcLength(c, True)
+        return (4 * np.pi * a / (p * p)) if p > 0 else 0.0
 
     def _color_detect(self, bgr, roi):
         if self.h_center is None:
@@ -552,26 +573,29 @@ class FruitTracker:
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
         cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cnts = [c for c in cnts if cv2.contourArea(c) >= 150]
-        if not cnts:
+        # size + roundness gates (rejects elongated arm/hand, specks)
+        cands = [c for c in cnts
+                 if cv2.contourArea(c) >= self.min_area
+                 and self._roundness(c) >= self.min_roundness
+                 and self._centroid(c) is not None]
+        if not cands:
             return None
         if self.last is not None:
-            def cdist(c):
-                M = cv2.moments(c)
-                if M["m00"] == 0:
-                    return 1e9
-                return np.hypot(M["m10"] / M["m00"] - self.last[0],
-                                M["m01"] / M["m00"] - self.last[1])
-            best = min(cnts, key=cdist)
+            # spatial gate: only blobs near the last lock; nearest wins. Refuse to
+            # jump across the frame (that's how it ran off onto skin).
+            def dist(c):
+                cx, cy = self._centroid(c)
+                return np.hypot(cx - self.last[0], cy - self.last[1])
+            near = [c for c in cands if dist(c) <= self.gate_px]
+            if not near:
+                return None
+            best = min(near, key=dist)
         else:
-            best = max(cnts, key=cv2.contourArea)
-        M = cv2.moments(best)
-        if M["m00"] == 0:
-            return None
-        cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
+            best = max(cands, key=cv2.contourArea)
+        cx, cy = self._centroid(best)
         x, y, w, h = cv2.boundingRect(best)
         return {"label": "fruit(color)", "conf": 0.0,
-                "box": (x, y, x + w, y + h), "cx": cx, "cy": cy}
+                "box": (x, y, x + w, y + h), "cx": int(cx), "cy": int(cy)}
 
     def detect(self, model, bgr, classes, conf, roi):
         f = detect_fruit(model, bgr, roi, classes, conf)
@@ -592,6 +616,19 @@ def resolve_seed_hue(args):
     if args.fruit_color:
         return COLOR_HUES[args.fruit_color]
     return None
+
+
+def make_tracker(args):
+    """Create a FruitTracker with the discriminator knobs from args applied,
+    seeded with a hue if --fruit-color/--fruit-hue was given."""
+    t = FruitTracker()
+    t.smin = args.color_smin
+    t.hue_tol = args.color_hue_tol
+    t.gate_px = args.color_gate
+    seed = resolve_seed_hue(args)
+    if seed is not None:
+        t.h_center = seed
+    return t
 
 
 # Set True (by run_calibrate) to pop a diagnostic window at every detection.
@@ -729,11 +766,9 @@ def run_calibrate(r, model, classes, args):
 
     # Acquire with YOLO from a distance, then track by colour (robust when the
     # camera gets close/overhead and YOLO can no longer recognise the fruit).
-    tracker = FruitTracker()
-    seed_hue = resolve_seed_hue(args)
-    if seed_hue is not None:
-        tracker.h_center = seed_hue
-        print(f"[calib] seeded colour tracker at hue {seed_hue} "
+    tracker = make_tracker(args)
+    if tracker.h_center is not None:
+        print(f"[calib] seeded colour tracker at hue {tracker.h_center} "
               "(colour tracking active from the first frame).")
 
     # 1) coarse: sweep to bring the fruit into view (YOLO learns its colour here).
@@ -931,6 +966,14 @@ def parse_args():
     p.add_argument("--fruit-hue", type=int, default=None,
                    help="seed the colour tracker with an explicit OpenCV hue "
                         "(0..179); overrides --fruit-color")
+    p.add_argument("--color-smin", type=int, default=110,
+                   help="min saturation for colour tracking (raise to reject dull "
+                        "skin/background; default 110)")
+    p.add_argument("--color-hue-tol", type=int, default=12,
+                   help="+/- hue band for colour tracking (default 12)")
+    p.add_argument("--color-gate", type=int, default=160,
+                   help="once locked, reject colour blobs farther than this many "
+                        "pixels from the last position (default 160)")
     p.add_argument("--roi", nargs=4, type=int, metavar=("X", "Y", "W", "H"),
                    default=None, help="table region in pixels; default = full frame")
     p.add_argument("--approach-height", type=float, default=APPROACH_HEIGHT,
@@ -1051,11 +1094,9 @@ def main():
         hold_ori = start_ori
         # One tracker for the whole run: YOLO acquires, colour holds. Seed it if
         # a --fruit-color/--fruit-hue was given (then it works without any YOLO hit).
-        tracker = FruitTracker()
-        seed_hue = resolve_seed_hue(args)
-        if seed_hue is not None:
-            tracker.h_center = seed_hue
-            print(f"[scan] colour tracker seeded at hue {seed_hue}.")
+        tracker = make_tracker(args)
+        if tracker.h_center is not None:
+            print(f"[scan] colour tracker seeded at hue {tracker.h_center}.")
         poses = scan_grid(start_pos, args.half_extent[0], args.half_extent[1],
                           args.grid[0], args.grid[1], start_pos[2])
         print(f"[scan] sweeping {len(poses)} poses around the start pose "

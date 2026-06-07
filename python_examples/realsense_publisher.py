@@ -9,6 +9,15 @@ variants) can pull through the existing SSH tunnel:
     textured triangulated depth mesh, lit and z-buffered. This is the
     realsense-viewer "3D" tab look: continuous colored surfaces, NOT a point
     splat. Tilt angle is configurable.
+  * Raw depth:       16-bit aligned depth, PNG-encoded -> key
+    suturebot::realsense::depth  (same 8-byte little-endian double timestamp
+    header as color). Multiply the decoded uint16 by `depth_scale` (published
+    in the intrinsics key) to get meters. Consumed by fruit_scan.py to put a
+    real 3D point under a detected pixel.
+  * Intrinsics:      JSON {fx, fy, ppx, ppy, width, height, depth_scale} of the
+    color stream (depth is aligned to color) -> key
+    suturebot::realsense::intrinsics. Set once at startup; needed to
+    back-project a pixel through the depth frame.
 
 How the 3D render works:
   - Every depth pixel becomes a vertex (back-projected via the color
@@ -36,6 +45,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import json
 import struct
 import threading
 import time
@@ -60,8 +70,10 @@ import pyrealsense2 as rs
 import redis
 
 
-DEFAULT_COLOR_KEY = "suturebot::realsense::color"
-DEFAULT_3D_KEY    = "suturebot::realsense::pointcloud"
+DEFAULT_COLOR_KEY      = "suturebot::realsense::color"
+DEFAULT_3D_KEY         = "suturebot::realsense::pointcloud"
+DEFAULT_DEPTH_KEY      = "suturebot::realsense::depth"
+DEFAULT_INTRINSICS_KEY = "suturebot::realsense::intrinsics"
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,6 +90,14 @@ def parse_args() -> argparse.Namespace:
                    help="color JPEG quality 1-100 (default 80)")
     p.add_argument("--device-serial", default=None,
                    help="RealSense serial number; default = first device")
+    # Raw depth + intrinsics (for fruit_scan.py and other 3D consumers) ----------
+    p.add_argument("--no-depth", action="store_true",
+                   help="Skip publishing the raw 16-bit depth frame + intrinsics. "
+                        "(The 3D mesh render is controlled separately by --no-3d.)")
+    p.add_argument("--depth-key", default=DEFAULT_DEPTH_KEY,
+                   help=f"Redis key for raw 16-bit depth PNG (default: {DEFAULT_DEPTH_KEY})")
+    p.add_argument("--intrinsics-key", default=DEFAULT_INTRINSICS_KEY,
+                   help=f"Redis key for color intrinsics JSON (default: {DEFAULT_INTRINSICS_KEY})")
     # 3D mesh render options -----------------------------------------------------
     p.add_argument("--no-3d", action="store_true",
                    help="Skip the 3D mesh render (publish color only).")
@@ -413,13 +433,16 @@ class _RenderWorker(threading.Thread):
 def main() -> None:
     args = parse_args()
 
+    # Depth stream is needed for either the 3D mesh render OR raw-depth publish.
+    need_depth = (not args.no_3d) or (not args.no_depth)
+
     pipeline = rs.pipeline()
     config = rs.config()
     if args.device_serial:
         config.enable_device(args.device_serial)
     config.enable_stream(rs.stream.color, args.width, args.height,
                          rs.format.bgr8, args.fps)
-    if not args.no_3d:
+    if need_depth:
         config.enable_stream(rs.stream.depth, args.depth_width, args.depth_height,
                              rs.format.z16, args.fps)
     profile = pipeline.start(config)
@@ -427,14 +450,14 @@ def main() -> None:
     print(f"Streaming {dev.get_info(rs.camera_info.name)} "
           f"(SN {dev.get_info(rs.camera_info.serial_number)}) at "
           f"{args.width}x{args.height}@{args.fps}fps "
-          f"({'color only' if args.no_3d else 'color + depth'})")
+          f"({'color only' if not need_depth else 'color + depth'})")
 
     align = None
     color_intr = None
     depth_scale = 1.0 / 1000.0
     worker = None
 
-    if not args.no_3d:
+    if need_depth:
         align = rs.align(rs.stream.color)
         depth_sensor = profile.get_device().first_depth_sensor()
         depth_scale = depth_sensor.get_depth_scale()
@@ -456,6 +479,22 @@ def main() -> None:
     r = redis.Redis(host=args.host, port=args.port)
     r.ping()
     print(f"Publishing color JPEG to Redis {args.host}:{args.port} key '{args.key}'")
+
+    publish_depth = need_depth and not args.no_depth
+    if publish_depth:
+        # Intrinsics are static, so publish once. Depth is aligned to color, so
+        # the color intrinsics are the ones a consumer must use to back-project
+        # a color-frame pixel through the depth frame.
+        fx, fy, ppx, ppy = color_intr
+        r.set(args.intrinsics_key, json.dumps({
+            "fx": fx, "fy": fy, "ppx": ppx, "ppy": ppy,
+            "width": args.width, "height": args.height,
+            "depth_scale": depth_scale,
+        }))
+        print(f"Publishing raw 16-bit depth PNG to key '{args.depth_key}' "
+              f"(depth_scale {depth_scale:.6f} m/unit); "
+              f"intrinsics JSON to key '{args.intrinsics_key}'")
+
     if not args.no_3d:
         print(f"Publishing 3D mesh JPEG to key '{args.threed_key}' "
               f"(tilt {args.tilt_deg:.0f}deg, FOV {args.fov:.0f}deg, "
@@ -463,6 +502,8 @@ def main() -> None:
         worker = _RenderWorker(r, args, color_intr)
         worker.start()
     print("Ctrl-C to stop.")
+
+    depth_encode = [int(cv2.IMWRITE_PNG_COMPRESSION), 1]   # fast, lossless
 
     color_encode = [int(cv2.IMWRITE_JPEG_QUALITY), args.jpeg_quality]
     n = 0
@@ -485,14 +526,19 @@ def main() -> None:
             header = struct.pack("<d", ts)
             r.set(args.key, header + buf.tobytes())
 
-            if worker is not None:
+            if need_depth:
                 depth = frames.get_depth_frame()
                 if depth:
-                    depth_m = (np.asanyarray(depth.get_data()).astype(np.float32)
-                               * depth_scale)
-                    # img.copy() because img is a view into the RealSense buffer,
-                    # which gets reused next iteration.
-                    worker.submit(depth_m, img.copy(), ts)
+                    depth_u16 = np.asanyarray(depth.get_data())   # raw z16 units
+                    if publish_depth:
+                        ok_d, dbuf = cv2.imencode(".png", depth_u16, depth_encode)
+                        if ok_d:
+                            r.set(args.depth_key, header + dbuf.tobytes())
+                    if worker is not None:
+                        depth_m = depth_u16.astype(np.float32) * depth_scale
+                        # img.copy() because img is a view into the RealSense
+                        # buffer, which gets reused next iteration.
+                        worker.submit(depth_m, img.copy(), ts)
 
             n += 1
             if n % args.fps == 0:

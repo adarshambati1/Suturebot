@@ -496,23 +496,48 @@ def load_calibration():
 # ----------------------------------------------------------------------------
 # Detection + visual-servo centering (used by the scan run and calibration)
 # ----------------------------------------------------------------------------
-def grab_detection(r, model, classes, args):
+# Set True (by run_calibrate) to pop a diagnostic window at every detection.
+_VIS = False
+_VIS_WIN = "fruit_scan (calibrate)"
+
+
+def _vis_calib(bgr, fruit, p_cam, note=""):
+    out = bgr.copy()
+    h, w = out.shape[:2]
+    cv2.drawMarker(out, (w // 2, h // 2), (0, 255, 255), cv2.MARKER_CROSS, 26, 2)
+    if fruit is not None:
+        x1, y1, x2, y2 = fruit["box"]
+        cv2.rectangle(out, (x1, y1), (x2, y2), (0, 220, 0), 2)
+        cv2.circle(out, (fruit["cx"], fruit["cy"]), 4, (0, 220, 0), -1)
+    status = (f"{'FRUIT' if fruit is not None else 'no fruit'} | "
+              f"{'depth OK' if p_cam is not None else 'NO DEPTH'}")
+    cv2.putText(out, f"{note}  {status}", (8, 24), cv2.FONT_HERSHEY_SIMPLEX,
+                0.6, (0, 255, 255), 2, cv2.LINE_AA)
+    return out
+
+
+def grab_detection(r, model, classes, args, note=""):
     """Read a fresh frame; return (fruit, p_cam, bgr). fruit/p_cam may be None."""
     bgr = fresh_color(r)
     if bgr is None:
         return None, None, None
     roi = tuple(args.roi) if args.roi else (0, 0, bgr.shape[1], bgr.shape[0])
     fruit = detect_fruit(model, bgr, roi, classes, args.conf)
-    if fruit is None:
-        return None, None, bgr
-    intr = read_intrinsics(r)
     p_cam = None
-    if intr is not None:
-        depth_u16, _ = read_depth(r)
-        z = sample_depth_m(depth_u16, fruit["cx"], fruit["cy"],
-                           intr.get("depth_scale", 0.001))
-        if z is not None:
-            p_cam = deproject(fruit["cx"], fruit["cy"], z, intr)
+    if fruit is not None:
+        intr = read_intrinsics(r)
+        if intr is not None:
+            depth_u16, _ = read_depth(r)
+            z = sample_depth_m(depth_u16, fruit["cx"], fruit["cy"],
+                               intr.get("depth_scale", 0.001), win=9)
+            if z is not None:
+                p_cam = deproject(fruit["cx"], fruit["cy"], z, intr)
+    if _VIS:
+        try:
+            cv2.imshow(_VIS_WIN, _vis_calib(bgr, fruit, p_cam, note))
+            cv2.waitKey(1)
+        except cv2.error:
+            pass
     return fruit, p_cam, bgr
 
 
@@ -582,6 +607,8 @@ def center_on_fruit(r, model, classes, args, ori, pos, J,
 # Auto hand-eye calibration routine
 # ----------------------------------------------------------------------------
 def run_calibrate(r, model, classes, args):
+    global _VIS
+    _VIS = True   # show a diagnostic window at every detection during calibration
     if not verify_and_activate(r, args.config_file):
         return
     if read_intrinsics(r) is None:
@@ -591,6 +618,11 @@ def run_calibrate(r, model, classes, args):
     if start_pos is None:
         print("[calib] cannot read robot pose; is the controller running?")
         return
+    # Depth sanity check up front so 'no depth' failures are obvious immediately.
+    if read_depth(r) is None:
+        print("[calib] WARNING: no depth frame on Redis (key "
+              f"'{REDIS_KEYS.rs_depth}'). Run the publisher WITHOUT --no-depth — "
+              "calibration needs depth at the fruit pixel.")
 
     # 1) coarse: sweep to bring the fruit into view.
     poses = scan_grid(start_pos, args.half_extent[0], args.half_extent[1],
@@ -626,10 +658,15 @@ def run_calibrate(r, model, classes, args):
     for k, (axis, deg) in enumerate(tilts):
         ori = start_ori if axis is None else _rot_about(axis, deg) @ start_ori
         move_to(r, base_pos, ori, MOVE_TIME, f"tilt {k + 1}/{len(tilts)} ({deg:+.0f}deg)")
-        pos = center_on_fruit(r, model, classes, args, ori, base_pos, J)
-        f, p_cam, _ = grab_detection(r, model, classes, args)
+        center_on_fruit(r, model, classes, args, ori, base_pos, J)
+        f, p_cam, _ = grab_detection(r, model, classes, args, note=f"tilt {k + 1}")
+        if f is None:
+            print(f"       tilt {k + 1}: NO FRUIT in view after tilt — skipping "
+                  "(tilt may be too large / fruit left frame).")
+            continue
         if p_cam is None:
-            print(f"       tilt {k + 1}: no valid depth/detection, skipping.")
+            print(f"       tilt {k + 1}: fruit seen at pixel ({f['cx']},{f['cy']}) "
+                  "but NO DEPTH there — skipping (depth hole / out of range).")
             continue
         cur_pos, cur_ori = read_actual_pose(r)
         records.append((cur_ori, cur_pos, p_cam))

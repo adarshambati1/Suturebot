@@ -60,7 +60,7 @@ import redis
 # Sim vs. real — same toggle as the other clients.
 # ----------------------------------------------------------------------------
 # "Rizon4s" -> OpenSai simulation; "Titania" -> real Flexiv driver.
-ROBOT_NAME = "Rizon4s"
+ROBOT_NAME = "Titania"
 
 # This client only reads camera keys and commands the cartesian controller, so
 # it is compatible with any of the grav scene XMLs. We verify against the

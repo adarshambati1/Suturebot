@@ -59,9 +59,13 @@ def main():
 
     # --- floating / hand-guiding [RDK] ---
     if not args.no_float:
-        robot.SwitchMode(flexivrdk.Mode.NRT_PRIMITIVE_EXECUTION)
-        robot.ExecutePrimitive("Floating", {})    # [RDK] verify primitive name/params
-        print("FLOATING -- move the arm by hand.")
+        try:
+            robot.SwitchMode(flexivrdk.Mode.NRT_PRIMITIVE_EXECUTION)
+            robot.ExecutePrimitive("Floating", {})    # [RDK] name/params vary by version
+            print("FLOATING -- move the arm by hand.")
+        except Exception as e:
+            print(f"(could not start 'Floating' primitive [{e}])")
+            print(">>> Enable hand-guiding on the PENDANT now; recording anyway. <<<")
     else:
         print("enable hand-guiding on the pendant now; recording...")
 

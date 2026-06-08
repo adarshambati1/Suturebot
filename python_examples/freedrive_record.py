@@ -68,9 +68,21 @@ def main():
     # --- gripper [RDK] (assumes Flexiv-recognized gripper; wire to Robotiq if not) ---
     try:
         gripper = flexivrdk.Gripper(robot)
-    except Exception:
+        # Newer RDK requires enabling + initializing the gripper before any
+        # Grasp()/Move() -- without it you get "gripper not enabled". Try the
+        # known method names; harmless if absent in your RDK version.
+        for m in ("Enable", "Init", "enable", "init"):
+            fn = getattr(gripper, m, None)
+            if callable(fn):
+                try:
+                    fn()
+                    print(f"gripper.{m}() ok")
+                    time.sleep(1.0)
+                except Exception as e:
+                    print(f"(gripper.{m}() failed: {e})")
+    except Exception as e:
         gripper = None
-        print("(no RDK gripper; g/b will only be LOGGED, not actuated -- wire grip() to your Robotiq)")
+        print(f"(no RDK gripper [{e}]; g/b will only be LOGGED, not actuated)")
 
     def grip(close):
         if gripper is None:

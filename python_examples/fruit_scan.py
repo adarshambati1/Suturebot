@@ -1262,13 +1262,16 @@ def main():
 
     # --- SCAN -----------------------------------------------------------------
     fruit, scan_frame, hold_ori = None, None, None
+    # Use the YOLO+colour tracker in the static paths too, so --fruit-color works
+    # and detection survives the close-up/odd-angle frames YOLO alone misses.
+    static_tracker = make_tracker(args)
     if args.image:
         scan_frame = cv2.imread(args.image)
         if scan_frame is None:
             print(f"Could not read image '{args.image}'.", file=sys.stderr)
             sys.exit(1)
         roi = tuple(args.roi) if args.roi else (0, 0, scan_frame.shape[1], scan_frame.shape[0])
-        fruit = detect_fruit(model, scan_frame, roi, classes, args.conf)
+        fruit = static_tracker.detect(model, scan_frame, classes, args.conf, roi)
     elif not use_robot:
         scan_frame = fresh_color(r)
         if scan_frame is None:
@@ -1276,7 +1279,7 @@ def main():
                   file=sys.stderr)
             sys.exit(1)
         roi = tuple(args.roi) if args.roi else (0, 0, scan_frame.shape[1], scan_frame.shape[0])
-        fruit = detect_fruit(model, scan_frame, roi, classes, args.conf)
+        fruit = static_tracker.detect(model, scan_frame, classes, args.conf, roi)
     else:
         # Anchor the sweep to the arm's live pose: same xy neighbourhood, same
         # height, same orientation it started in. Local search, no jump.

@@ -1,21 +1,15 @@
 <redisConfiguration namespacePrefix="opensai" />
 
 <!-- Free-float TEACHING variant of suturebot_grav_real.xml.
-
-     Same real-robot setup (no <simvizConfiguration>; state comes from the
-     Flexiv driver under "Titania"), but the active controller is a pure
-     gravity-compensation "floating" task: gravityCompensation="true" with a
-     joint task at ZERO gains. The driver then applies only gravity-comp
-     torques, so the arm holds its weight but is fully compliant -- you push it
-     by hand to demonstrate a stitch. No RDK, no pendant free-drive, no serial.
-
+     Same real-robot setup (no simvizConfiguration; state comes from the Flexiv
+     driver under "Titania"). The active controller is a pure gravity-comp
+     "floating" task: a joint task at ZERO gains. With gravityCompensation off
+     OpenSai sends near-zero torque; with it on OpenSai also compensates gravity.
      Joint state still publishes to opensai::sensors::Titania::joint_positions
-     regardless of the active controller, so record_demo_redis.py captures the
-     hand-guided trajectory:
-        python3 python_examples/record_demo_redis.py            # records over Redis
-
-     "floating" is listed first so it is the active controller at launch. The
-     cartesian / joint controllers are kept so you can switch back over Redis
+     regardless of the active controller, so record_demo_redis.py can capture a
+     hand-guided trajectory.
+     "floating" is listed first so it is active at launch; the cartesian / joint
+     controllers are kept so you can switch back over Redis
      (opensai::controllers::Titania::active_controller_name) without relaunching. -->
 
 <robotControlConfiguration robotName="Titania"
@@ -26,13 +20,11 @@
 		enabledAtStartup="true"
 		addTimestampToFilename="false" />
 
-	<!-- Free-float. The Flexiv driver ALREADY compensates gravity internally
-	     (with OpenSai also compensating, the arm flew up -- double comp), so
-	     here gravityCompensation="false": OpenSai sends ~zero torque (zero
-	     joint gains, no comp) and the robot's own gravity comp holds the arm
-	     weightless => compliant / hand-guidable.
-	     If instead the arm SAGS/falls on launch, the driver is NOT comping —
-	     set gravityCompensation="true" and we disable the driver's comp. -->
+	<!-- Free-float: zero joint gains, gravity comp OFF. The Flexiv driver
+	     already compensates gravity (turning OpenSai comp on as well drove the
+	     arm upward), so OpenSai contributes near-zero torque here. If the arm
+	     SAGS on launch instead, the driver is not comping: set
+	     gravityCompensation="true". -->
 	<controller name="floating" gravityCompensation="false">
 		<jointTask name="joint_task">
 			<jointGains kp="0.0" kv="0.0" ki="0.0" />

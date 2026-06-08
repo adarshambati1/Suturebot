@@ -319,6 +319,43 @@ def detect_blue_strip(bgr, box, hsv_lo, hsv_hi):
     return {"found": True, "cx": cx, "cy": cy, "area": float(area), "contour": contour}
 
 
+def detect_blue_line(bgr, box, hsv_lo, hsv_hi):
+    """Fit a line to the blue strip inside the fruit box (the cut). Returns
+    {found, p1, p2, center, angle_deg, length_px} in full-image pixel coords."""
+    x1, y1, x2, y2 = box
+    x1, y1 = max(int(x1), 0), max(int(y1), 0)
+    x2, y2 = min(int(x2), bgr.shape[1]), min(int(y2), bgr.shape[0])
+    if x2 <= x1 or y2 <= y1:
+        return {"found": False}
+    hsv = cv2.cvtColor(bgr[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, hsv_lo, hsv_hi)
+    k = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    pts = [c.reshape(-1, 2) for c in cnts if cv2.contourArea(c) >= MIN_BLUE_AREA_PX]
+    if not pts:
+        return {"found": False}
+    pts = np.vstack(pts).astype(np.float32)
+    if len(pts) < 10:
+        return {"found": False}
+    vx, vy, x0, y0 = (float(v) for v in cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).flatten())
+    d = np.array([vx, vy]); p0 = np.array([x0, y0])
+    t = (pts - p0) @ d
+    p1 = p0 + d * t.min() + [x1, y1]
+    p2 = p0 + d * t.max() + [x1, y1]
+    return {"found": True, "p1": p1, "p2": p2, "center": (p1 + p2) / 2,
+            "angle_deg": float(np.degrees(np.arctan2(vy, vx))),
+            "length_px": float(np.linalg.norm(p2 - p1))}
+
+
+def plan_stitch_nodes(p1, p2, n):
+    """n stitch nodes evenly along the cut line (excluding the very ends)."""
+    if n <= 1:
+        return [(p1 + p2) / 2]
+    return [p1 + (p2 - p1) * f for f in np.linspace(0.15, 0.85, n)]
+
+
 def sample_depth_m(depth_u16, u, v, depth_scale, win=5):
     """Median of the nonzero depth (in metres) in a (2*win+1) window around (u,v).
     Returns None if no valid depth there."""
@@ -922,6 +959,131 @@ def scan_grid(center, half_x, half_y, nx, ny, height):
 
 
 # ----------------------------------------------------------------------------
+# Stitch planning: show the cut line + stitch nodes, then ask permission
+# ----------------------------------------------------------------------------
+def annotate_stitch_plan(bgr, fruit, line, nodes, world_nodes=None):
+    out = bgr.copy()
+    if fruit is not None:
+        x1, y1, x2, y2 = fruit["box"]
+        cv2.rectangle(out, (x1, y1), (x2, y2), (0, 220, 0), 2)
+        cv2.putText(out, f"{fruit['label']} {fruit['conf']:.2f}", (x1, max(y1 - 8, 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 0), 2, cv2.LINE_AA)
+    if line and line.get("found"):
+        p1 = tuple(np.round(line["p1"]).astype(int))
+        p2 = tuple(np.round(line["p2"]).astype(int))
+        cv2.line(out, p1, p2, (255, 120, 0), 2)          # the cut (blue strip), drawn cyan-ish
+        for i, nd in enumerate(nodes):
+            c = tuple(np.round(nd).astype(int))
+            cv2.circle(out, c, 7, (0, 0, 255), 2)        # stitch node (red ring)
+            cv2.circle(out, c, 2, (0, 0, 255), -1)
+            cv2.putText(out, str(i + 1), (c[0] + 9, c[1] + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2, cv2.LINE_AA)
+    cv2.putText(out, f"{len(nodes)} stitch nodes along the cut", (8, 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+    if world_nodes is not None:
+        cv2.putText(out, "world coords computed (calibrated)", (8, out.shape[0] - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    return out
+
+
+def _confirm(prompt):
+    """y/N prompt; default No, and No if input isn't interactive."""
+    if not sys.stdin.isatty():
+        print(f"{prompt} (non-interactive -> No)")
+        return False
+    try:
+        return input(f"{prompt} [y/N]: ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def run_plan_stitch(r, model, classes, args):
+    """Detect the fruit + blue cut line, overlay the planned stitch nodes, show
+    it, and ask permission before stitching. Execution is stubbed until tested.
+    Calibration is NOT needed for the overlay; it's only used to print world
+    coords when available."""
+    use_robot = not (args.no_robot or args.image)
+    tracker = make_tracker(args)
+
+    if args.image:
+        bgr = cv2.imread(args.image)
+        if bgr is None:
+            print(f"Could not read image '{args.image}'.", file=sys.stderr); return
+        roi = tuple(args.roi) if args.roi else (0, 0, bgr.shape[1], bgr.shape[0])
+        fruit = tracker.detect(model, bgr, classes, args.conf, roi)
+    else:
+        fruit, _, bgr = grab_detection(r, model, classes, args, tracker=tracker)
+        if bgr is None:
+            print("No color frame on Redis — is realsense_publisher.py running?",
+                  file=sys.stderr); return
+
+    if fruit is None:
+        print("[plan] no fruit detected — aim the camera at the fruit first.")
+        if args.show:
+            cv2.imshow("stitch plan", bgr); cv2.waitKey(0); cv2.destroyAllWindows()
+        return
+
+    box = fruit["box"]
+    line = detect_blue_line(bgr, box, BLUE_HSV_LO, BLUE_HSV_HI)
+    if not line.get("found"):
+        print("[plan] found the fruit but no blue cut line on it.")
+        out = annotate_stitch_plan(bgr, fruit, None, [])
+        save_overlay(out, args.save_dir)
+        if args.show:
+            cv2.imshow("stitch plan", out); cv2.waitKey(0); cv2.destroyAllWindows()
+        return
+
+    nodes = plan_stitch_nodes(line["p1"], line["p2"], args.stitches)
+    print(f"[plan] cut line {line['length_px']:.0f}px @ {line['angle_deg']:.0f}deg; "
+          f"{len(nodes)} stitch nodes (pixels):")
+    for i, nd in enumerate(nodes):
+        print(f"   node {i + 1}: ({nd[0]:.0f}, {nd[1]:.0f})")
+
+    # Optional: world coords for the nodes (needs calibration + depth + robot pose).
+    world_nodes = None
+    if use_robot:
+        intr = read_intrinsics(r)
+        flange_pos, flange_ori = read_actual_pose(r)
+        depth_u16, _ = read_depth(r) if intr is not None else (None, None)
+        if intr is not None and flange_pos is not None and depth_u16 is not None:
+            world_nodes = []
+            ds = intr.get("depth_scale", 0.001)
+            for nd in nodes:
+                z = sample_depth_m(depth_u16, int(nd[0]), int(nd[1]), ds, win=9)
+                if z is None:
+                    world_nodes.append(None); continue
+                w = cam_to_world(deproject(nd[0], nd[1], z, intr), flange_pos, flange_ori)
+                world_nodes.append(w)
+            print("[plan] world node coords (m, depends on calibration):")
+            for i, w in enumerate(world_nodes):
+                print(f"   node {i + 1}: " + ("no depth" if w is None
+                      else f"({w[0]:+.3f}, {w[1]:+.3f}, {w[2]:+.3f})"))
+
+    out = annotate_stitch_plan(bgr, fruit, line, nodes, world_nodes)
+    path = save_overlay(out, args.save_dir)
+    print(f"[plan] overlay -> {path}")
+    if args.show:
+        cv2.imshow("stitch plan", out); cv2.waitKey(500)
+
+    if not _confirm("Proceed with the stitch?"):
+        print("[plan] not confirmed — no stitch executed.")
+        if args.show:
+            cv2.destroyAllWindows()
+        return
+
+    # --- execution (not yet wired) -------------------------------------------
+    print("[stitch] EXECUTION NOT YET IMPLEMENTED — confirmed plan:")
+    for i, nd in enumerate(nodes):
+        loc = ""
+        if world_nodes is not None and world_nodes[i] is not None:
+            w = world_nodes[i]; loc = f" -> world ({w[0]:+.3f},{w[1]:+.3f},{w[2]:+.3f})"
+        print(f"   would stitch node {i + 1} at pixel ({nd[0]:.0f},{nd[1]:.0f}){loc}")
+    print("[stitch] (next: drive the needle tip to each node via the stitch FSM)")
+    if args.show:
+        cv2.destroyAllWindows()
+
+
+# ----------------------------------------------------------------------------
 # Live preview
 # ----------------------------------------------------------------------------
 def run_live(r, model, classes, args):
@@ -1039,6 +1201,13 @@ def parse_args():
     p.add_argument("--selftest-calib", action="store_true",
                    help="run the hand-eye solver on synthetic data and exit "
                         "(no robot/camera needed)")
+    # Stitch planning -------------------------------------------------------------
+    p.add_argument("--plan-stitch", action="store_true",
+                   help="detect the blue cut line, overlay the planned stitch "
+                        "nodes, and ask permission before stitching (execution "
+                        "stubbed). No calibration needed for the overlay.")
+    p.add_argument("--stitches", type=int, default=3,
+                   help="number of stitch nodes to plan along the cut (default 3)")
     return p.parse_args()
 
 
@@ -1074,6 +1243,11 @@ def main():
     # Calibration is a standalone mode (moves the robot, solves, saves, exits).
     if args.calibrate:
         run_calibrate(r, model, classes, args)
+        return
+
+    # Stitch planning: preview the cut + nodes, confirm, (then execute later).
+    if args.plan_stitch:
+        run_plan_stitch(r, model, classes, args)
         return
 
     # Live preview is a standalone mode: no robot, no XML check, no scan.

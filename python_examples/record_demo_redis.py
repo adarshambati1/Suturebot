@@ -49,6 +49,11 @@ def parse_args():
     ap.add_argument("--rate", type=float, default=100.0, help="record rate Hz (default 100)")
     ap.add_argument("--host", default="127.0.0.1", help="Redis host")
     ap.add_argument("--port", type=int, default=6379, help="Redis port")
+    ap.add_argument("--joint-key", default=None,
+                    help="override the joint-positions Redis key (default "
+                         "opensai::sensors::<robot>::joint_positions)")
+    ap.add_argument("--grip-key", default=None,
+                    help="override the gripper-mode Redis key")
     return ap.parse_args()
 
 
@@ -87,8 +92,8 @@ def main():
     except redis.exceptions.ConnectionError:
         sys.exit(f"Cannot reach Redis at {args.host}:{args.port}.")
 
-    q_key = f"opensai::sensors::{args.robot}::joint_positions"
-    grip_key = f"opensai::commands::{args.robot}::gripper::mode"
+    q_key = args.joint_key or f"opensai::sensors::{args.robot}::joint_positions"
+    grip_key = args.grip_key or f"opensai::commands::{args.robot}::gripper::mode"
 
     # Verify the joint stream is actually being published (and parseable).
     first = parse_vec(r.get(q_key))

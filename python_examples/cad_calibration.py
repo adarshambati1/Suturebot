@@ -8,9 +8,12 @@ with the D405 lens position read from the "Fake Camera Part For Measurement"
 group in rizon4s/visual/d405-camera-mount.obj.
 
 Result (flange frame): the lens sits ~2 cm above the flange and ~7.8 cm to the
--x side (the opposite side of the forceps, which are at +x), looking along
-flange -z (the same direction the needle points). This matches the hand
-description: "other side of the forceps", "~11 cm above the gripper base".
+-x side (opposite the forceps, which are at +x). The bracket angles the lens
+~20 deg off the tool axis (measured from the CAD camera part), so the optical
+axis is [0.34, 0, -0.94] — mostly down (flange -z, the way the needle points)
+but tilted 20 deg toward the forceps so the wrist cam sees where the tool works.
+Matches the hand description: "other side of the forceps", "base of the mount
+~11 cm, creates an angle off the top".
 
 Because fruit_scan centres the fruit on the optical axis before placing the
 tool, the position (t_fc) and forward axis dominate accuracy; the image-roll
@@ -79,6 +82,10 @@ def main():
     ap.add_argument("--cam-z-above-flange", type=float, default=None,
                     help="override the lens height above the flange (m) instead "
                          "of using the CAD value")
+    ap.add_argument("--tilt-deg", type=float, default=20.0,
+                    help="camera down-tilt off the flange tool axis, toward the "
+                         "forceps (deg). 20 measured from the mount CAD (PCA of "
+                         "the camera part); the bracket angles the lens off the top.")
     args = ap.parse_args()
 
     T_l7_mount = T(rpy(1.5717, 3.1415, 1.5717), [0.045, 0, 0.046])
@@ -90,11 +97,14 @@ def main():
     if args.cam_z_above_flange is not None:
         t_fc[2] = args.cam_z_above_flange
 
-    # Optical frame in the mount: lens looks +y_mount (toward the workspace);
-    # image-right = +x_mount, image-down = -z_mount (right-handed, z forward).
-    R_mount_optical = np.array([[1, 0, 0],
-                                [0, 0, 1],
-                                [0, -1, 0]], float)
+    # Optical frame in the mount: lens nominally looks +y_mount (toward the
+    # workspace); image-right = +x_mount, image-down = -z_mount (right-handed,
+    # z forward). The bracket then tilts the lens by --tilt-deg about mount +x,
+    # which in the flange frame angles the optical axis toward the forceps (+x).
+    R_base = np.array([[1, 0, 0],
+                       [0, 0, 1],
+                       [0, -1, 0]], float)
+    R_mount_optical = Rx(-np.deg2rad(args.tilt_deg)) @ R_base
     R_fc = T_flange_mount[:3, :3] @ R_mount_optical
     Tcam = T(R_fc, t_fc)
 

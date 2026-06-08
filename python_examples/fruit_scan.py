@@ -385,6 +385,71 @@ def cam_to_world(p_cam, flange_pos, flange_ori):
     return flange_pos + flange_ori @ p_flange
 
 
+def cam_dir_to_world(d_cam, flange_ori):
+    """Rotate a camera-frame DIRECTION into world (no translation)."""
+    d = T_FLANGE_CAM[:3, :3] @ d_cam
+    d = flange_ori @ d
+    n = np.linalg.norm(d)
+    return d / n if n > 0 else d
+
+
+def estimate_surface_normal(depth_u16, intr, u, v, depth_scale, half=22, step=3):
+    """Fit a plane to a depth patch around pixel (u,v); return (center_cam,
+    normal_cam) in the camera frame. Normal points toward the camera (-z).
+    Returns (None, None) if too few valid depth samples."""
+    pts = []
+    for du in range(-half, half + 1, step):
+        for dv in range(-half, half + 1, step):
+            z = sample_depth_m(depth_u16, int(u + du), int(v + dv), depth_scale, win=2)
+            if z is not None:
+                pts.append(deproject(u + du, v + dv, z, intr))
+    if len(pts) < 12:
+        return None, None
+    pts = np.array(pts)
+    c = pts.mean(axis=0)
+    _, _, Vt = np.linalg.svd(pts - c, full_matrices=False)
+    n = Vt[2]                       # smallest-variance dir = surface normal
+    if n[2] > 0:                    # camera looks +z; want normal toward camera
+        n = -n
+    return c, n / np.linalg.norm(n)
+
+
+def _save_cut_pose(cut, save_dir):
+    """Persist the latest detected cut pose so the anchored stitch player can read it."""
+    os.makedirs(save_dir, exist_ok=True)
+    path = os.path.join(save_dir, "cut_pose.json")
+    with open(path, "w") as f:
+        json.dump({k: (v.tolist() if hasattr(v, "tolist") else v)
+                   for k, v in cut.items()}, f, indent=2)
+    return path
+
+
+def compute_cut_pose(line, depth_u16, intr, flange_pos, flange_ori, depth_scale):
+    """3D pose of the cut: center, along-cut direction, and surface normal, all
+    in the WORLD frame. Returns a dict or None if depth is unavailable."""
+    cx, cy = line["center"]
+    z = sample_depth_m(depth_u16, int(cx), int(cy), depth_scale, win=9)
+    if z is None:
+        return None
+    center_w = cam_to_world(deproject(cx, cy, z, intr), flange_pos, flange_ori)
+    # cut direction: back-project both line endpoints, difference -> world dir
+    out = {"center": center_w}
+    zs = [sample_depth_m(depth_u16, int(p[0]), int(p[1]), depth_scale, win=9)
+          for p in (line["p1"], line["p2"])]
+    if all(zz is not None for zz in zs):
+        p1 = cam_to_world(deproject(line["p1"][0], line["p1"][1], zs[0], intr), flange_pos, flange_ori)
+        p2 = cam_to_world(deproject(line["p2"][0], line["p2"][1], zs[1], intr), flange_pos, flange_ori)
+        d = p2 - p1
+        out["direction"] = d / np.linalg.norm(d) if np.linalg.norm(d) > 0 else d
+    _, n_cam = estimate_surface_normal(depth_u16, intr, cx, cy, depth_scale)
+    if n_cam is not None:
+        nrm = cam_dir_to_world(n_cam, flange_ori)
+        if nrm[2] < 0:               # want it pointing up out of the apple
+            nrm = -nrm
+        out["normal"] = nrm
+    return out
+
+
 # ----------------------------------------------------------------------------
 # Hand-eye calibration (auto-solve T_FLANGE_CAM from the arm watching one fruit)
 # ----------------------------------------------------------------------------
@@ -1058,6 +1123,22 @@ def run_plan_stitch(r, model, classes, args):
             for i, w in enumerate(world_nodes):
                 print(f"   node {i + 1}: " + ("no depth" if w is None
                       else f"({w[0]:+.3f}, {w[1]:+.3f}, {w[2]:+.3f})"))
+
+            # Full 3D cut pose (position + along-cut direction + surface normal) —
+            # the apple-independent anchor for the stitch.
+            cut = compute_cut_pose(line, depth_u16, intr, flange_pos, flange_ori, ds)
+            if cut is not None:
+                c = cut["center"]
+                print(f"[cut3d] center (m):  ({c[0]:+.3f}, {c[1]:+.3f}, {c[2]:+.3f})")
+                if "direction" in cut:
+                    d = cut["direction"]
+                    print(f"[cut3d] along-cut:   ({d[0]:+.3f}, {d[1]:+.3f}, {d[2]:+.3f})")
+                if "normal" in cut:
+                    nn = cut["normal"]
+                    tilt = np.degrees(np.arccos(np.clip(abs(nn[2]), -1, 1)))
+                    print(f"[cut3d] surf normal: ({nn[0]:+.3f}, {nn[1]:+.3f}, {nn[2]:+.3f})  "
+                          f"({tilt:.0f}deg off vertical)")
+                _save_cut_pose(cut, args.save_dir)
 
     out = annotate_stitch_plan(bgr, fruit, line, nodes, world_nodes)
     path = save_overlay(out, args.save_dir)

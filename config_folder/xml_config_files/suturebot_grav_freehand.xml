@@ -26,9 +26,14 @@
 		enabledAtStartup="true"
 		addTimestampToFilename="false" />
 
-	<!-- Free-float: gravity comp on, joint task gains all zero => no task
-	     torques, only gravity compensation => compliant / hand-guidable. -->
-	<controller name="floating" gravityCompensation="true">
+	<!-- Free-float. The Flexiv driver ALREADY compensates gravity internally
+	     (with OpenSai also compensating, the arm flew up -- double comp), so
+	     here gravityCompensation="false": OpenSai sends ~zero torque (zero
+	     joint gains, no comp) and the robot's own gravity comp holds the arm
+	     weightless => compliant / hand-guidable.
+	     If instead the arm SAGS/falls on launch, the driver is NOT comping —
+	     set gravityCompensation="true" and we disable the driver's comp. -->
+	<controller name="floating" gravityCompensation="false">
 		<jointTask name="joint_task">
 			<jointGains kp="0.0" kv="0.0" ki="0.0" />
 			<velocitySaturation enabled="false" />

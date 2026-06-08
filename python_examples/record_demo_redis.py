@@ -59,6 +59,23 @@ def get_key():
     return None
 
 
+def parse_vec(raw):
+    """Parse a Redis joint vector as a JSON array (OpenSai's format, e.g.
+    "[0.1, 0.2, ...]") or whitespace-separated floats. Returns a list or None."""
+    if raw is None:
+        return None
+    s = raw.decode().strip()
+    try:
+        v = json.loads(s)
+        return [float(x) for x in v]
+    except Exception:
+        pass
+    try:
+        return [float(x) for x in s.split()]
+    except Exception:
+        return None
+
+
 def main():
     args = parse_args()
     if not sys.stdin.isatty():
@@ -73,12 +90,12 @@ def main():
     q_key = f"opensai::sensors::{args.robot}::joint_positions"
     grip_key = f"opensai::commands::{args.robot}::gripper::mode"
 
-    # Verify the joint stream is actually being published before we start.
-    raw = r.get(q_key)
-    if raw is None:
-        sys.exit(f"No joint stream at '{q_key}'. Is the {args.robot} driver running "
-                 "and publishing joint_positions?")
-    n_joints = len(raw.decode().split())
+    # Verify the joint stream is actually being published (and parseable).
+    first = parse_vec(r.get(q_key))
+    if first is None:
+        sys.exit(f"No parseable joint stream at '{q_key}'. Is the {args.robot} "
+                 "driver running and publishing joint_positions?")
+    n_joints = len(first)
     print(f"Recording {n_joints}-joint stream from '{q_key}' @ {args.rate:.0f} Hz.")
     print("Enable hand-guiding on the pendant, then move the arm by hand.")
     print("  g = close clamp,  b = open clamp,  x = stop and save")
@@ -105,21 +122,14 @@ def main():
             elif k == "x":
                 break
 
-            raw = r.get(q_key)
-            if raw is not None:
-                parts = raw.decode().strip().split()
-                if len(parts) == n_joints:
-                    try:
-                        q = [float(x) for x in parts]
-                    except ValueError:
-                        q = None
-                    if q is not None:
-                        times.append(time.monotonic() - t0)
-                        qs.append(q)
-                        gripper.append(closed)
-                        if len(qs) % int(args.rate) == 0:
-                            print(f"  {len(qs)} samples, {times[-1]:.1f}s, "
-                                  f"clamp={'closed' if closed else 'open'}", end="\r")
+            q = parse_vec(r.get(q_key))
+            if q is not None and len(q) == n_joints:
+                times.append(time.monotonic() - t0)
+                qs.append(q)
+                gripper.append(closed)
+                if len(qs) % int(args.rate) == 0:
+                    print(f"  {len(qs)} samples, {times[-1]:.1f}s, "
+                          f"clamp={'closed' if closed else 'open'}", end="\r")
 
             next_t += period
             sleep = next_t - time.monotonic()

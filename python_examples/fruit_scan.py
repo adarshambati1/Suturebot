@@ -137,7 +137,34 @@ DEFAULT_FRUIT_CLASSES = ("apple", "orange", "banana")
 # Preset hues (OpenCV H, 0..179) to seed the colour tracker when YOLO acquisition
 # is unreliable. "redorange" suits a reddish-orange apple.
 COLOR_HUES = {"red": 0, "redorange": 8, "red-orange": 8, "orange": 15,
-              "yellow": 27, "green": 60}
+              "yellow": 27, "green": 60, "magenta": 150, "pink": 162}
+
+# The needle tip is marked magenta so it can be tracked as a colour blob
+# (distinct from apple/skin/table). Used for the closed-loop re-grip.
+NEEDLE_HUE = 150
+
+
+def detect_needle_pixel(bgr, hue=NEEDLE_HUE, tol=15, smin=80, vmin=60,
+                        min_area=20, roi=None):
+    """Find the magenta needle-tip blob; return ((cx,cy), area) or (None, 0)."""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    lo = np.array([max(hue - tol, 0), smin, vmin])
+    hi = np.array([min(hue + tol, 179), 255, 255])
+    mask = cv2.inRange(hsv, lo, hi)
+    if roi is not None:
+        rx, ry, rw, rh = roi
+        m = np.zeros_like(mask); m[ry:ry + rh, rx:rx + rw] = 255
+        mask = cv2.bitwise_and(mask, m)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = [c for c in cnts if cv2.contourArea(c) >= min_area]
+    if not cnts:
+        return None, 0.0
+    biggest = max(cnts, key=cv2.contourArea)
+    M = cv2.moments(biggest)
+    if M["m00"] == 0:
+        return None, 0.0
+    return (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])), float(cv2.contourArea(biggest))
 
 # Blue-strip HSV thresholds (OpenCV HSV: H 0-179, S/V 0-255).
 BLUE_HSV_LO = np.array([100, 80, 40], dtype=np.uint8)

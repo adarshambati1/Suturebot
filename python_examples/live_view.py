@@ -104,13 +104,21 @@ def main():
             out = bgr.copy()
             hud = "raw"
 
-        # projected needle tip
+        # projected needle tip (red ✕, from calibration) + DETECTED magenta tip
+        # (magenta ○, from vision). If they coincide, calibration + needle offset
+        # are good. The detected one is the closed-loop re-grip signal.
         if not args.no_needle and intr is not None:
             px = needle_tip_pixel(intr)
             if px is not None and 0 <= px[0] < w and 0 <= px[1] < h:
                 cv2.drawMarker(out, px, (0, 0, 255), cv2.MARKER_TILTED_CROSS, 18, 2)
-                cv2.putText(out, "needle", (px[0] + 8, px[1]),
+                cv2.putText(out, "proj", (px[0] + 8, px[1]),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+        if not args.raw:
+            det, area = fs.detect_needle_pixel(bgr)
+            if det is not None:
+                cv2.circle(out, det, 8, (255, 0, 255), 2)
+                cv2.putText(out, "needle", (det[0] + 10, det[1] + 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2, cv2.LINE_AA)
 
         age = (time.time() - ts) if ts else None
         if age is not None:

@@ -41,12 +41,13 @@ def needle_consensus(hist, min_frac=0.5):
 
 
 def needle_tip(nd, fruit):
-    """The needle endpoint farther from the apple centre = the graspable tip."""
+    """The needle tip = the endpoint CLOSER to the apple centre (the pierce goes
+    upward, so the tip ends up toward the centre)."""
     if not nd.get("found"):
         return None
     p1, p2 = np.array(nd["p1"], float), np.array(nd["p2"], float)
     ctr = np.array([fruit["cx"], fruit["cy"]], float) if fruit else (p1 + p2) / 2
-    return p1 if np.linalg.norm(p1 - ctr) > np.linalg.norm(p2 - ctr) else p2
+    return p1 if np.linalg.norm(p1 - ctr) < np.linalg.norm(p2 - ctr) else p2
 
 
 def parse_args():

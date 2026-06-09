@@ -95,24 +95,29 @@ def main():
     # bit). Find the tip apex (max tip-z) before the first moved grab, and deepen
     # there along the empirical PLUNGE direction (how the tip actually went in).
     tips = np.array([T[:3, 3] + T[:3, :3] @ K.NEEDLE_TIP_OFFSET for T in poses])
+    flange = np.array([T[:3, 3] for T in poses])
     closes = [i for i in range(1, len(g)) if g[i] and not g[i - 1]]
-    first_grab = next((i for i in closes if np.linalg.norm(poses[i][:3, 3] - P0) > 0.02),
-                      (closes[0] if closes else len(q)))
-    apex = int(np.argmax(tips[:first_grab, 2]))      # deepest tip before the grab
-    RAMP_IN, TAPER = 30, 25
+    first_grab = next((i for i in closes if np.linalg.norm(flange[i] - P0) > 0.02), len(q))
+    first_move = int(np.argmax(np.linalg.norm(flange - P0, axis=1) > 0.01))   # the JUMP
+    apex = int(np.argmax(tips[:first_grab, 2]))      # deepest tip during the pierce
     deepen_m = PIERCE_DEEPEN_CM / 100.0
-    kk = min(25, apex)
-    pdir = tips[apex] - tips[apex - kk]              # plunge direction ("same as it did")
+    # penetration direction = how the tip travels going in (first move -> apex)
+    pdir = tips[apex] - tips[first_move]
     n = np.linalg.norm(pdir)
     pdir = pdir / n if n > 1e-6 else np.zeros(3)
+    # push deeper FROM THE JUMP: ramp in over the first move, HOLD through the
+    # whole initial pierce, taper after the first grab. (negative cm flips dir)
+    RAMP, TAPER = 12, 25
 
     def pierce_bump(i):
-        if deepen_m <= 0:
+        if deepen_m == 0 or i < first_move:
             return 0.0
-        if apex - RAMP_IN <= i <= apex:
-            return deepen_m * (i - (apex - RAMP_IN)) / RAMP_IN
-        if apex < i <= apex + TAPER:
-            return deepen_m * (1 - (i - apex) / TAPER)
+        if i < first_move + RAMP:
+            return deepen_m * (i - first_move) / RAMP
+        if i <= first_grab:
+            return deepen_m
+        if i <= first_grab + TAPER:
+            return deepen_m * (1 - (i - first_grab) / TAPER)
         return 0.0
 
     adj = []
@@ -123,9 +128,9 @@ def main():
                 pos = pos + np.asarray(off, float)
         pos = pos + pierce_bump(i) * pdir
         adj.append((pos, T[:3, :3]))
-    if deepen_m > 0:
-        print(f"  PIERCE deepen +{PIERCE_DEEPEN_CM}cm along {np.round(pdir,2)} "
-              f"peaking at wp{apex} (t={t[apex]:.0f}s)")
+    if deepen_m != 0:
+        print(f"  PIERCE deepen {PIERCE_DEEPEN_CM:+.1f}cm along {np.round(pdir,2)} "
+              f"FROM THE JUMP (wp{first_move}, t={t[first_move]:.0f}s) held thru wp{first_grab}")
     if SKIP_CLAMP_EVENTS:
         print(f"  SKIP clamp events {SKIP_CLAMP_EVENTS} (no actuation)")
 
@@ -161,10 +166,10 @@ def main():
     trans_idx = -1
     for i in range(len(q)):
         pos, R = adj[i]
-        if deepen_m > 0 and i == max(0, apex - RAMP_IN):
-            print(f"  >> pierce deepen: ramping in @t={t[i]:.0f}s")
-        if deepen_m > 0 and i == apex:
-            print(f"  >> pierce deepen: PEAK +{PIERCE_DEEPEN_CM}cm @t={t[i]:.0f}s")
+        if deepen_m != 0 and i == first_move:
+            print(f"  >> pierce deepen: ENGAGED at the jump @t={t[i]:.0f}s ({PIERCE_DEEPEN_CM:+.1f}cm)")
+        if deepen_m != 0 and i == first_grab:
+            print(f"  >> pierce deepen: releasing @t={t[i]:.0f}s")
         r.set(K_["cpos"], json.dumps(pos.tolist()))
         r.set(K_["cori"], json.dumps(R.tolist()))
         if not args.no_nullspace:

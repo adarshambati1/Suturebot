@@ -250,20 +250,27 @@ def main():
             offset = (first_grab_pos - flange[third]) if PULL_REBASE else np.zeros(3)
             prev_open = max([o for o in opens_all if o < third], default=third)
             pull_end = min([o for o in opens_all if o > third], default=len(q) - 1)
-            keep = list(range(0, prev_open + 1)) + list(range(third, len(q)))  # drop the loop
+            # Extend the cut THROUGH the post-grip downward dip: the needle is already in
+            # hand (event-8 grip held), so there is no reason to scoop down to the old
+            # re-grab spot. Cut from the grip until the flange-z recovers to the grip
+            # level (where the real pull-through begins) -> arm goes straight across.
+            grip_z = flange[prev_open, 2]
+            cut_end = third
+            while cut_end < len(q) - 1 and flange[cut_end, 2] < grip_z - 0.002:
+                cut_end += 1
+            keep = list(range(0, prev_open + 1)) + list(range(cut_end, len(q)))
             TAPER2 = 30
 
-            def pull_offset(i, _o=offset, _t=third, _p=pull_end, _T=TAPER2):
+            def pull_offset(i, _o=offset, _t=cut_end, _p=pull_end, _T=TAPER2):
                 if _t <= i <= _p:
                     return _o
                 if _p < i <= _p + _T:
                     return _o * (1 - (i - _p) / _T)
                 return np.zeros(3)
 
-            shift = f"shifted {np.round(offset*100,1)}cm to first-grab spot" if PULL_REBASE \
-                else "grab at the needle's actual spot (no shift)"
-            print(f"  CUT TOP LOOP wp{prev_open+1}-{third} (t{t[prev_open+1]:.0f}-{t[third]:.0f}s); "
-                  f"pull-through: {shift}")
+            shift = f"shifted {np.round(offset*100,1)}cm" if PULL_REBASE else "no down-scoop"
+            print(f"  CUT wp{prev_open+1}-{cut_end} (t{t[prev_open+1]:.0f}-{t[cut_end]:.0f}s): "
+                  f"loop + post-grip dip -> straight to pull ({shift})")
 
     adj = []
     for i in keep:

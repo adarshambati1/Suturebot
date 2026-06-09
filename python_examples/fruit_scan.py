@@ -421,9 +421,22 @@ def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=160,
     crop = bgr[y0:y1, x0:x1]
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1]
     blue = cv2.dilate(cv2.inRange(hsv, BLUE_HSV_LO, BLUE_HSV_HI),
                       np.ones((5, 5), np.uint8))
-    dark = (gray < dark_v).astype(np.uint8) * 255
+    # Apple FOOTPRINT: the saturated (colourful) region, closed so the thin
+    # needle streak gets filled in, then the largest blob = the apple. This is
+    # the "negative space" you see -- the apple's solid extent.
+    apple = (sat > 50).astype(np.uint8) * 255
+    apple = cv2.morphologyEx(apple, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
+    acnts, _ = cv2.findContours(apple, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if acnts:
+        big = max(acnts, key=cv2.contourArea)
+        apple = np.zeros_like(apple)
+        cv2.drawContours(apple, [big], -1, 255, -1)
+    # Needle = DARK pixels that sit ON the apple footprint (excludes the dark
+    # table/gripper/shadows that were fusing into one blob).
+    dark = ((gray < dark_v) & (apple > 0)).astype(np.uint8) * 255
     dark = cv2.bitwise_and(dark, cv2.bitwise_not(blue))   # drop the blue cut itself
     dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
     # The needle is the longest, thinnest (most elongated) dark blob — not the

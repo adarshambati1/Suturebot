@@ -35,9 +35,12 @@ PIERCE_DEEPEN_CM = 1.0      # extra penetration at EACH push-in below, along its
 PIERCE_TIMES = [28.0, 78.0] # approx times (s) of the push-ins-from-below to deepen
                             # (nearest tip apex is used; add/remove to taste)
 
-PULL_FROM_FIRST_GRAB = True # at the top of the apple: keep the first two same-spot
-                            # grabs, CUT the little loop, and run the pull-through
-                            # from the first-grab spot instead of the drifted 3rd spot
+CUT_TOP_LOOP = True         # at the top of the apple: keep the same-spot grabs but
+                            # cut the little loop before the pull-through
+PULL_REBASE = False         # also shift the pull grab to the first-grab spot. OFF:
+                            # the needle stays at the insert spot, so shifting the
+                            # jaws up closed ABOVE the needle (missed) -> grab where
+                            # the needle actually is (the demo's original 3rd spot)
 
 SKIP_CLAMP_EVENTS = [0, 1]  # raw clamp-transition indices to NOT actuate. 0,1 =
                             # the static first close@8.5s + open@9.2s (no motion).
@@ -135,7 +138,7 @@ def main():
     def pull_offset(i):
         return np.zeros(3)
 
-    if PULL_FROM_FIRST_GRAB:
+    if CUT_TOP_LOOP:
         closes_all = [i for i in range(1, len(g)) if g[i] and not g[i - 1]]
         opens_all = [i for i in range(1, len(g)) if not g[i] and g[i - 1]]
         top = [i for i in closes_all if 33 < t[i] < 76]      # grabs at the top of the apple
@@ -143,7 +146,7 @@ def main():
             third = top[int(np.argmin([flange[i, 2] for i in top]))]   # lower/drifted grab = pull
             same = [i for i in top if i != third]
             first_grab_pos = np.median(flange[same], axis=0)
-            offset = first_grab_pos - flange[third]
+            offset = (first_grab_pos - flange[third]) if PULL_REBASE else np.zeros(3)
             prev_open = max([o for o in opens_all if o < third], default=third)
             pull_end = min([o for o in opens_all if o > third], default=len(q) - 1)
             keep = list(range(0, prev_open + 1)) + list(range(third, len(q)))  # drop the loop
@@ -156,9 +159,10 @@ def main():
                     return _o * (1 - (i - _p) / _T)
                 return np.zeros(3)
 
-            print(f"  PULL-FROM-FIRST-GRAB: cut loop wp{prev_open+1}-{third} "
-                  f"(t{t[prev_open+1]:.0f}-{t[third]:.0f}s); pull shifted "
-                  f"{np.round(offset*100,1)}cm up to the first-grab spot")
+            shift = f"shifted {np.round(offset*100,1)}cm to first-grab spot" if PULL_REBASE \
+                else "grab at the needle's actual spot (no shift)"
+            print(f"  CUT TOP LOOP wp{prev_open+1}-{third} (t{t[prev_open+1]:.0f}-{t[third]:.0f}s); "
+                  f"pull-through: {shift}")
 
     adj = []
     for i in keep:

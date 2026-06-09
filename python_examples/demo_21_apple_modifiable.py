@@ -89,27 +89,30 @@ def main():
     poses = [K.fk_flange(qi) for qi in q]
     P0 = poses[0][:3, 3]
 
-    # ---- initial-pierce deepening (localized bump along the pierce direction) ----
+    # ---- initial-pierce deepening (localized bump at the actual PIERCE APEX) ----
+    # The deepest pierce = where the NEEDLE TIP is driven furthest into the apple,
+    # NOT where the clamp grabs (the grab is after the needle already retreated a
+    # bit). Find the tip apex (max tip-z) before the first moved grab, and deepen
+    # there along the empirical PLUNGE direction (how the tip actually went in).
+    tips = np.array([T[:3, 3] + T[:3, :3] @ K.NEEDLE_TIP_OFFSET for T in poses])
     closes = [i for i in range(1, len(g)) if g[i] and not g[i - 1]]
-    # the pierce bottoms out at the first clamp-close that actually MOVED from start
-    push_end = next((i for i in closes if np.linalg.norm(poses[i][:3, 3] - P0) > 0.02),
-                    (closes[0] if closes else len(q)))
-    RAMP_IN, TAPER = 40, 20
+    first_grab = next((i for i in closes if np.linalg.norm(poses[i][:3, 3] - P0) > 0.02),
+                      (closes[0] if closes else len(q)))
+    apex = int(np.argmax(tips[:first_grab, 2]))      # deepest tip before the grab
+    RAMP_IN, TAPER = 30, 25
     deepen_m = PIERCE_DEEPEN_CM / 100.0
-    # push along the NEEDLE AXIS (where the needle points) at the pierce pose --
-    # that's the penetration direction ("push the needle in more"), NOT the net
-    # lateral approach motion. Set PIERCE_DEEPEN_CM negative to flip if it backs out.
-    needle_unit = K.NEEDLE_TIP_OFFSET / np.linalg.norm(K.NEEDLE_TIP_OFFSET)
-    pdir = poses[push_end][:3, :3] @ needle_unit
-    pdir = pdir / np.linalg.norm(pdir)
+    kk = min(25, apex)
+    pdir = tips[apex] - tips[apex - kk]              # plunge direction ("same as it did")
+    n = np.linalg.norm(pdir)
+    pdir = pdir / n if n > 1e-6 else np.zeros(3)
 
     def pierce_bump(i):
         if deepen_m <= 0:
             return 0.0
-        if push_end - RAMP_IN <= i <= push_end:
-            return deepen_m * (i - (push_end - RAMP_IN)) / RAMP_IN
-        if push_end < i <= push_end + TAPER:
-            return deepen_m * (1 - (i - push_end) / TAPER)
+        if apex - RAMP_IN <= i <= apex:
+            return deepen_m * (i - (apex - RAMP_IN)) / RAMP_IN
+        if apex < i <= apex + TAPER:
+            return deepen_m * (1 - (i - apex) / TAPER)
         return 0.0
 
     adj = []
@@ -122,7 +125,7 @@ def main():
         adj.append((pos, T[:3, :3]))
     if deepen_m > 0:
         print(f"  PIERCE deepen +{PIERCE_DEEPEN_CM}cm along {np.round(pdir,2)} "
-              f"peaking at wp{push_end} (t={t[push_end]:.0f}s)")
+              f"peaking at wp{apex} (t={t[apex]:.0f}s)")
     if SKIP_CLAMP_EVENTS:
         print(f"  SKIP clamp events {SKIP_CLAMP_EVENTS} (no actuation)")
 
@@ -158,9 +161,9 @@ def main():
     trans_idx = -1
     for i in range(len(q)):
         pos, R = adj[i]
-        if deepen_m > 0 and i == max(0, push_end - RAMP_IN):
+        if deepen_m > 0 and i == max(0, apex - RAMP_IN):
             print(f"  >> pierce deepen: ramping in @t={t[i]:.0f}s")
-        if deepen_m > 0 and i == push_end:
+        if deepen_m > 0 and i == apex:
             print(f"  >> pierce deepen: PEAK +{PIERCE_DEEPEN_CM}cm @t={t[i]:.0f}s")
         r.set(K_["cpos"], json.dumps(pos.tolist()))
         r.set(K_["cori"], json.dumps(R.tolist()))

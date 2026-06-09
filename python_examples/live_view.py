@@ -102,18 +102,9 @@ def main():
             fruit = tracker.detect(model, bgr, classes, args.conf, roi)
             strip = fs.detect_blue_line(bgr, fruit["box"], fs.BLUE_HSV_LO, fs.BLUE_HSV_HI) \
                 if fruit is not None else None
-            out = bgr.copy()
-            # MINIMAL overlay so it never covers the cut/needle:
-            #  - thin green fruit box (no label on the fruit)
-            #  - thin orange cut line
-            #  - green needle line + small dot
-            if fruit is not None:
-                x1, y1, x2, y2 = fruit["box"]
-                cv2.rectangle(out, (x1, y1), (x2, y2), (0, 220, 0), 1)
-            if strip and strip.get("found"):
-                p1 = tuple(np.round(strip["p1"]).astype(int))
-                p2 = tuple(np.round(strip["p2"]).astype(int))
-                cv2.line(out, p1, p2, (255, 120, 0), 1)
+            nodes = fs.plan_stitch_nodes(strip["p1"], strip["p2"], 3) \
+                if strip and strip.get("found") else []
+            out = fs.annotate_stitch_plan(bgr, fruit, strip, nodes)   # box+label+cut+nodes
             nd, dmask = ({"found": False}, None)
             if fruit is not None:
                 nd, dmask = fs.detect_needle_darkline(

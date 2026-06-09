@@ -1,0 +1,60 @@
+<redisConfiguration namespacePrefix="opensai" />
+
+<!-- Gravity-compensated REPLAY variant of suturebot_grav_real.xml.
+
+     Identical real-robot setup (no <simvizConfiguration>; state from the Flexiv
+     driver under "Titania"), EXCEPT both controllers run with
+     gravityCompensation="true" and the joint task uses stiffer gains with a
+     small integral.
+
+     Why: the plain suturebot_grav_real.xml has gravity comp OFF (OpenSai's
+     default) and the joint task on soft defaults (kp=50, ki=0), so the ~1.24kg
+     tool (grav_base 1.186 + hemostat 0.05 + needle) was uncompensated and the
+     arm settled BELOW commanded angles ("always lower" on playback). The URDF
+     models the tool mass, so enabling comp holds it.
+
+     CAUTION: in the floating/freehand XML, OpenSai comp ON TOP of the driver's
+     float-mode comp drove the arm UP. In CONTROLLER (torque) mode the driver
+     passes torques through, so this should be correct -- but if the arm drifts
+     UP on launch, the driver is double-comping: use the plain real XML instead
+     and set the tool payload on the Flexiv. Watch for integral oscillation too;
+     lower ki toward 0 if it hunts.
+
+     Launch this one for playback_smooth / play_plan / play_plan_vision; keep the
+     plain suturebot_grav_real.xml for everything else. -->
+
+<robotControlConfiguration robotName="Titania"
+	robotModelFile="${ROBOT_FILES_FOLDER}/Rizon4s_Grav_hemostat.urdf"
+	getMassMatrixFromRedis="false">
+
+	<logger logFolderName="log_files/suturebot_grav_real_gravcomp/controllers"
+		enabledAtStartup="true"
+		addTimestampToFilename="false" />
+
+	<controller name="cartesian_controller" gravityCompensation="true">
+		<motionForceTask name="cartesian_task"
+			linkName="flange">
+			<velocitySaturation enabled="false" />
+
+			<otg type="disabled" />
+
+			<positionGains kp="400.0" kv="40.0" />
+			<orientationGains kp="400.0" kv="40.0" />
+		</motionForceTask>
+
+		<jointTask name="joint_task">
+			<otg type="disabled" />
+		</jointTask>
+	</controller>
+
+	<controller name="joint_controller" gravityCompensation="true">
+		<jointTask name="joint_task">
+			<velocitySaturation enabled="true" />
+			<otg type="disabled" />
+			<!-- explicit gains: default kp=50 is soft; small integral cancels any
+			     residual gravity-comp error so there is no steady-state droop. -->
+			<jointGains kp="100.0" kv="20.0" ki="5.0" />
+		</jointTask>
+	</controller>
+
+</robotControlConfiguration>

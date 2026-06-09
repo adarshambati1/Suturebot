@@ -122,6 +122,7 @@ def main():
     classes = set(args.classes)
     needle_hist = deque(maxlen=args.needle_window)
     world_hist = deque(maxlen=args.needle_window)
+    needle_world_hist = deque(maxlen=args.needle_window)
     world_locked = None      # latched apple world XYZ once found + stable
     while True:
         bgr, ts = fs.read_color(r)
@@ -157,34 +158,53 @@ def main():
                 dm = cv2.resize(dm, (int(dw * sc), int(dh * sc)))
                 out[h - dm.shape[0]:h, w - dm.shape[1]:w] = dm
 
-            # --- apple in WORLD coords (validates the camera->robot calibration) ---
-            # Deproject the apple centre through live depth + the loaded
-            # T_FLANGE_CAM + the live flange pose. Uses the same robust locked
-            # detection (not a one-shot photo) and a rolling median for stability.
-            # Once the apple is LOCKed and the reading is stable, FREEZE it.
-            if world_locked is None and fruit is not None and intr is not None:
+            # --- WORLD coords via depth + T_FLANGE_CAM + live flange pose ---
+            # Read depth + robot pose ONCE; reuse for apple (frozen) + needle (live).
+            depth = fpos = fori = None
+            ds = intr.get("depth_scale", 0.001) if intr is not None else 0.001
+            if intr is not None and (fruit is not None or cons is not None):
                 depth, _ = fs.read_depth(r)
                 fpos, fori = fs.read_actual_pose(r)
-                if depth is not None and fpos is not None:
-                    ds = intr.get("depth_scale", 0.001)
-                    z = fs.sample_depth_m(depth, int(fruit["cx"]), int(fruit["cy"]), ds, win=9)
-                    if z is not None:
-                        pc = fs.deproject(fruit["cx"], fruit["cy"], z, intr)
-                        world_hist.append(fs.cam_to_world(pc, fpos, fori))
+
+            def to_world(u, v, win):
+                if depth is None or fpos is None:
+                    return None
+                z = fs.sample_depth_m(depth, int(u), int(v), ds, win=win)
+                if z is None:
+                    return None
+                return fs.cam_to_world(fs.deproject(u, v, z, intr), fpos, fori)
+
+            # apple WORLD -- FREEZES once locked + stable (the calibration check)
+            if world_locked is None and fruit is not None:
+                wpt = to_world(fruit["cx"], fruit["cy"], 9)
+                if wpt is not None:
+                    world_hist.append(wpt)
                 wc = needle_consensus(world_hist)        # rolling median (3D ok)
                 if wc is not None and tracker.locked is not None:
-                    world_locked = wc                    # latch: apple found + stable
+                    world_locked = wc
                     print(f"[world] apple FROZEN at world "
                           f"({world_locked[0]:+.4f}, {world_locked[1]:+.4f}, "
                           f"{world_locked[2]:+.4f}) m  -- tape-measure this.")
             world_show = world_locked if world_locked is not None else needle_consensus(world_hist)
             if world_show is not None:
                 tag = "FROZEN" if world_locked is not None else "live"
-                cv2.putText(out, f"world {tag} "
+                cv2.putText(out, f"apple {tag} "
                             f"({world_show[0]:+.3f},{world_show[1]:+.3f},{world_show[2]:+.3f})m",
-                            (8, h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                            (8, h - 42), cv2.FONT_HERSHEY_SIMPLEX, 0.65,
                             (0, 255, 0) if world_locked is not None else (0, 220, 220),
                             2, cv2.LINE_AA)
+
+            # needle TIP in WORLD -- LIVE (the needle moves; this is the regrip
+            # target). Tighter depth window (5) since the needle is thin.
+            if cons is not None:
+                nwpt = to_world(cons[0], cons[1], 5)
+                if nwpt is not None:
+                    needle_world_hist.append(nwpt)
+            nwc = needle_consensus(needle_world_hist)
+            if nwc is not None:
+                cv2.putText(out, f"needle ({nwc[0]:+.3f},{nwc[1]:+.3f},{nwc[2]:+.3f})m",
+                            (8, h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                            (0, 255, 0), 2, cv2.LINE_AA)
 
             hud = (f"{fruit['label']} {fruit['conf']:.2f}" if fruit is not None else "no fruit")
             hud += "  LOCK" if tracker.locked is not None else ""
@@ -216,6 +236,7 @@ def main():
         if key == ord("r"):                 # re-acquire: clear the apple + world freeze
             world_locked = None
             world_hist.clear()
+            needle_world_hist.clear()
             if not args.raw:
                 tracker.locked = None
                 tracker.last = None

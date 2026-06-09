@@ -48,10 +48,15 @@ PULL_REBASE = False         # also shift the pull grab to the first-grab spot. O
                             # jaws up closed ABOVE the needle (missed) -> grab where
                             # the needle actually is (the demo's original 3rd spot)
 
-RAISE_TOP_REGRIP_CM = 0.4   # lift these regrips this much (+z) so the jaws stop biting
-                            # into the apple (was 0.25 -- too small). 0 = off.
-RAISE_REGRIP_TIMES = [56.0, 104.0]  # the last on-top grab of each pierce (s); snapped to
-                            # the nearest grab. pierce1 ~56s (wp131); pierce2 ~104s
+RAISE_TOP_REGRIP_CM = 0.0   # OFF -- the real problem isn't a 1/4cm bite, it's a 2-5cm
+                            # SCOOP (flange dips down then up at the grab). See DESCOOP.
+RAISE_REGRIP_TIMES = [56.0, 104.0]
+
+DESCOOP_WINDOWS = [(62.0, 72.0), (99.0, 108.0)]  # flatten the flange-z DIP (scoop) in
+                            # these time windows: stitch-1 last/3rd regrip, and the last
+                            # stitch's grip. z is lifted up to the straight line across the
+                            # window so the arm goes across instead of plunging down.
+                            # (add (84,99) if stitch-2's grip A also scoops too much)
 
 GRIP12_X_BACK_CM = 1.0      # pull stitch-1 grips 1&2 (catch ~36s + regrip ~51s) BACK in -x
                             # by this much -- less far forward, but NOT onto the pierce plane
@@ -197,6 +202,22 @@ def main():
             return np.array([-gx_m * f, 0.0, 0.0])
         return np.zeros(3)
 
+    # ---- flatten SCOOPS: lift the flange-z dip up to a straight line across the window ----
+    descoop = []
+    for (ts, te) in DESCOOP_WINDOWS:
+        lo = int(np.argmin(np.abs(t - ts)))
+        hi = int(np.argmin(np.abs(t - te)))
+        if hi > lo:
+            descoop.append((lo, hi, flange[lo, 2], flange[hi, 2]))
+
+    def descoop_z(i):
+        for (lo, hi, zlo, zhi) in descoop:
+            if lo <= i <= hi:
+                base = zlo + (zhi - zlo) * (i - lo) / (hi - lo)   # straight line across
+                if flange[i, 2] < base:
+                    return np.array([0.0, 0.0, base - flange[i, 2]])  # fill the dip
+        return np.zeros(3)
+
     if CUT_TOP_LOOP:
         top = [i for i in closes_all if 33 < t[i] < 76]      # grabs at the top of the apple
         if len(top) >= 2:
@@ -224,7 +245,7 @@ def main():
     adj = []
     for i in keep:
         pos = (poses[i][:3, 3] + GLOBAL_OFFSET + pierce_off(i) + pull_offset(i)
-               + raise_off(i) + grip_off(i))
+               + raise_off(i) + grip_off(i) + descoop_z(i))
         for (ts, te, off) in PHASE_OFFSETS:
             if ts <= t[i] <= te:
                 pos = pos + np.asarray(off, float)
@@ -245,6 +266,8 @@ def main():
         print("  PIERCE push = vertical (+z), full overshoot goes deeper")
     if RELAX_NULLSPACE_IN_PIERCE:
         print("  NULLSPACE relaxed during pierce HOLD (lets the overshoot through)")
+    if descoop:
+        print(f"  DE-SCOOP flatten z dip in windows {DESCOOP_WINDOWS}")
     if not np.allclose(GLOBAL_OFFSET, 0):
         print(f"  GLOBAL_OFFSET {np.round(GLOBAL_OFFSET*100,1)}cm (driver re-zero comp)")
 

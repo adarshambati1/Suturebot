@@ -22,7 +22,16 @@
 	     The Grav extends ~20 cm below the flange in flange-Z. Combined
 	     with the mosquito forceps + 69.81 mm needle, the chain to the
 	     needle tip is ~30 cm below the flange. -->
-	<controller name="cartesian_controller">
+	<!-- gravityCompensation="true": OpenSai's controller default is OFF, which
+	     left the ~1.24kg tool (grav_base + hemostat + needle) uncompensated, so
+	     the soft joint PD (kp=50, ki=0) settled BELOW the commanded angles
+	     ("always lower"). The URDF models the tool mass, so comp holds it.
+	     NOTE: in the freehand/floating XML, OpenSai comp on top of the driver's
+	     float-mode comp drove the arm UP. In CONTROLLER (torque) mode the driver
+	     passes torques through, so this is correct here -- but if the arm drifts
+	     UP on launch, the driver is double-comping: revert to "false" and instead
+	     set the tool payload on the Flexiv. -->
+	<controller name="cartesian_controller" gravityCompensation="true">
 		<motionForceTask name="cartesian_task"
 			linkName="flange">
 			<velocitySaturation enabled="false" />
@@ -38,10 +47,13 @@
 		</jointTask>
 	</controller>
 
-	<controller name="joint_controller">
+	<controller name="joint_controller" gravityCompensation="true">
 		<jointTask name="joint_task">
 			<velocitySaturation enabled="true" />
 			<otg type="disabled" />
+			<!-- explicit gains: default kp=50 is soft; add a small integral so any
+			     residual gravity-comp error doesn't leave a steady-state droop. -->
+			<jointGains kp="100.0" kv="20.0" ki="5.0" />
 		</jointTask>
 	</controller>
 

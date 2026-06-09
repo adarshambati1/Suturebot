@@ -63,13 +63,19 @@ DESCOOP_STRENGTH = 0.5      # soften the scoop (the ~5cm plunge down to the grab
                             # global -2.5cm height is set, tune this so it grabs the needle
                             # without a dramatic dig: lower if it grabs high, raise if it digs.
 
+EVENT10_RAISE_CM = 3.5      # raise the event-10 pull grab (~t72, wp173) + pull-through
+                            # (+z). That grab is already lower than the top grips, and the
+                            # global -2.5cm over-deepened it ("WAY too deep"); this lifts it
+                            # back up. Tune. (applies t71-85 with a taper)
+
 GRIP12_X_BACK_CM = 1.0      # pull stitch-1 grips 1&2 (catch ~36s + regrip ~51s) BACK in -x
                             # by this much -- less far forward, but NOT onto the pierce plane
                             # (which is ~1.7cm back); keeps fruit clearance. 0 = off.
 
-SKIP_CLAMP_EVENTS = [0, 1]  # raw clamp-transition indices to NOT actuate. 0,1 =
-                            # the static first close@8.5s + open@9.2s (no motion).
-                            # (events 2,3 @17-22.5s are also static if you want them too)
+SKIP_CLAMP_EVENTS = [0, 1, 9, 10]  # raw clamp-transition indices to NOT actuate.
+                            # 0,1 = static first close/open (no motion). 9,10 = the release
+                            # after the perfect event-8 grip + the over-deep re-grab -> skip
+                            # both so the good grip just HOLDS through the pull (no re-grab).
 
 PHASE_OFFSETS: list = [     # per-time-window world shifts (m): (t0, t1, [dx,dy,dz])
     # (3.0, 36.0, np.array([0.0, 0.0, -0.01])),
@@ -207,6 +213,18 @@ def main():
             return np.array([-gx_m * f, 0.0, 0.0])
         return np.zeros(3)
 
+    # ---- raise the event-10 pull grab (+z) out of the over-deepened spot ----
+    e10_m = EVENT10_RAISE_CM / 100.0
+
+    def event10_off(i):
+        if e10_m == 0:
+            return np.zeros(3)
+        lo, hi, tp = 71.0, 85.0, 1.5
+        if lo <= t[i] <= hi:
+            f = max(0.0, min((t[i] - lo) / tp, (hi - t[i]) / tp, 1.0))
+            return np.array([0.0, 0.0, e10_m * f])
+        return np.zeros(3)
+
     # ---- flatten SCOOPS: lift the flange-z dip up to a straight line across the window ----
     descoop = []
     for (ts, te) in DESCOOP_WINDOWS:
@@ -250,7 +268,7 @@ def main():
     adj = []
     for i in keep:
         pos = (poses[i][:3, 3] + GLOBAL_OFFSET + pierce_off(i) + pull_offset(i)
-               + raise_off(i) + grip_off(i) + descoop_z(i))
+               + raise_off(i) + grip_off(i) + descoop_z(i) + event10_off(i))
         for (ts, te, off) in PHASE_OFFSETS:
             if ts <= t[i] <= te:
                 pos = pos + np.asarray(off, float)
@@ -275,6 +293,8 @@ def main():
         print(f"  DE-SCOOP flatten z dip in windows {DESCOOP_WINDOWS}")
     if not np.allclose(GLOBAL_OFFSET, 0):
         print(f"  GLOBAL_OFFSET {np.round(GLOBAL_OFFSET*100,1)}cm (driver re-zero comp)")
+    if e10_m != 0:
+        print(f"  EVENT10 raise +{EVENT10_RAISE_CM}cm (+z) over t71-85 (pull region)")
 
     r = redis.Redis(host=args.host, port=args.port)
     r.ping()

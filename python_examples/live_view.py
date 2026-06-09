@@ -32,17 +32,21 @@ import fruit_scan as fs
 
 
 def needle_consensus(hist, min_frac=0.5):
-    """Most-consistent needle over a rolling window: median endpoints of the
-    frames that found it (normalised order). Returns (p1, p2) or None."""
+    """Most-consistent needle TIP over a rolling window: median of the per-frame
+    tip points (frames that found it). Returns (x, y) or None."""
     found = [x for x in hist if x is not None]
     if len(found) < max(2, int(len(hist) * min_frac)):
         return None
-    P1, P2 = [], []
-    for a, b in found:
-        if (a[0], a[1]) > (b[0], b[1]):
-            a, b = b, a
-        P1.append(a); P2.append(b)
-    return np.median(P1, axis=0), np.median(P2, axis=0)
+    return np.median(np.array(found), axis=0)
+
+
+def needle_tip(nd, fruit):
+    """The needle endpoint farther from the apple centre = the graspable tip."""
+    if not nd.get("found"):
+        return None
+    p1, p2 = np.array(nd["p1"], float), np.array(nd["p2"], float)
+    ctr = np.array([fruit["cx"], fruit["cy"]], float) if fruit else (p1 + p2) / 2
+    return p1 if np.linalg.norm(p1 - ctr) > np.linalg.norm(p2 - ctr) else p2
 
 
 def parse_args():
@@ -128,12 +132,11 @@ def main():
             if fruit is not None:
                 nd, dmask = fs.detect_needle_darkline(
                     bgr, line=strip, box=fruit["box"], dark_v=args.dark_v, return_mask=True)
-            needle_hist.append((np.array(nd["p1"]), np.array(nd["p2"]))
-                               if nd.get("found") else None)
+            needle_hist.append(needle_tip(nd, fruit))
             cons = needle_consensus(needle_hist)
-            if cons is not None:                 # stable, most-common needle
-                cv2.line(out, tuple(cons[0].astype(int)), tuple(cons[1].astype(int)),
-                         (0, 255, 0), 2)
+            if cons is not None:                 # stable, most-common needle tip
+                cv2.circle(out, tuple(cons.astype(int)), 7, (0, 255, 0), -1)
+                cv2.circle(out, tuple(cons.astype(int)), 9, (0, 255, 0), 2)
             if args.needle_debug and dmask is not None:
                 # show the dark mask (what the detector sees) in the corner;
                 # cyan = candidate blobs, green = chosen needle.

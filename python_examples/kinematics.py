@@ -103,6 +103,82 @@ def fk_needle_tip(q):
     return tip, T[:3, :3]
 
 
+def _rotvec(R):
+    """Rotation matrix -> axis-angle vector (3,)."""
+    cos = np.clip((np.trace(R) - 1) / 2, -1, 1)
+    ang = np.arccos(cos)
+    if ang < 1e-9:
+        return np.zeros(3)
+    k = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
+    return k / (2 * np.sin(ang)) * ang
+
+
+def _pose_error(T_cur, T_goal):
+    """6-vec [pos_err(3); orient_err(3)] from current to goal flange pose."""
+    ep = T_goal[:3, 3] - T_cur[:3, 3]
+    eo = _rotvec(T_goal[:3, :3] @ T_cur[:3, :3].T)
+    return np.concatenate([ep, eo])
+
+
+def _jacobian(q, eps=1e-6):
+    """Numerical 6x7 Jacobian of the flange pose wrt joints."""
+    T0 = fk_flange(q)
+    J = np.zeros((6, len(q)))
+    for i in range(len(q)):
+        dq = np.array(q, float); dq[i] += eps
+        J[:, i] = _pose_error(T0, fk_flange(dq)) / eps
+    return J
+
+
+def ik_flange(T_goal, q_seed, iters=300, tol=1e-6, reg=0.05):
+    """Damped least-squares IK for the flange pose, seeded at q_seed. The
+    seed-bias is applied in the JACOBIAN NULLSPACE so it resolves the 7-DOF
+    redundancy (keeps the arm near the demo config) WITHOUT corrupting the
+    primary pose task. Returns (q, ok, pos_err_m, ori_err_deg)."""
+    q = np.array(q_seed, float)
+    q_seed = np.array(q_seed, float)
+    lam = 0.01
+    I7 = np.eye(len(q))
+    for _ in range(iters):
+        T = fk_flange(q)
+        e = _pose_error(T, T_goal)
+        if np.linalg.norm(e[:3]) < tol and np.linalg.norm(e[3:]) < tol:
+            break
+        J = _jacobian(q)
+        Jpinv = J.T @ np.linalg.inv(J @ J.T + (lam ** 2) * np.eye(6))
+        dq = Jpinv @ e + (I7 - Jpinv @ J) @ (reg * (q_seed - q))   # nullspace bias
+        n = np.linalg.norm(dq)
+        if n > 0.3:
+            dq *= 0.3 / n
+        q = q + dq
+    T = fk_flange(q)
+    e = _pose_error(T, T_goal)
+    pe, oe = np.linalg.norm(e[:3]), np.degrees(np.linalg.norm(e[3:]))
+    return q, (pe < 1e-3 and oe < 0.5), pe, oe
+
+
+def selftest_ik():
+    """Round-trip: pick random reachable configs, FK -> pose, IK(pose, noisy seed)
+    -> q', check it reproduces the pose (and stays near the seed)."""
+    rng = np.random.default_rng(0)
+    base = np.deg2rad([60, -55, -80, 105, 90, 40, -60])   # near the demo region
+    fails = 0
+    worst_p = worst_o = 0.0
+    for _ in range(20):
+        q_true = base + rng.normal(0, 0.15, 7)
+        T = fk_flange(q_true)
+        q_seed = q_true + rng.normal(0, 0.10, 7)           # noisy starting guess
+        q_sol, ok, pe, oe = ik_flange(T, q_seed)
+        worst_p = max(worst_p, pe); worst_o = max(worst_o, oe)
+        if not ok:
+            fails += 1
+    print("=== IK round-trip self-test ===")
+    print(f"worst pos err {worst_p*1000:.2f} mm, worst ori err {worst_o:.3f} deg, "
+          f"{20-fails}/20 converged")
+    print("RESULT:", "PASS" if fails == 0 else "FAIL")
+    return fails == 0
+
+
 def selftest():
     print(f"chain: {len(_CHAIN)} joints ({_N_REV} revolute) -> flange")
     z = fk_flange(np.zeros(7))
@@ -133,6 +209,7 @@ def main():
 
     if args.selftest:
         selftest()
+        selftest_ik()
         return
 
     if args.check_redis:

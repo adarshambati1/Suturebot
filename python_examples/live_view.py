@@ -113,8 +113,9 @@ def main():
                 cv2.line(out, nd["p1"], nd["p2"], (0, 255, 0), 2)
                 cv2.circle(out, nd["cross"], 5, (0, 255, 0), -1)
             if args.needle_debug and dmask is not None:
-                # show the dark mask (what the detector sees) in the corner
-                dm = cv2.cvtColor(dmask, cv2.COLOR_GRAY2BGR)
+                # show the dark mask (what the detector sees) in the corner;
+                # cyan = candidate blobs, green = chosen needle.
+                dm = dmask if dmask.ndim == 3 else cv2.cvtColor(dmask, cv2.COLOR_GRAY2BGR)
                 dh, dw = dm.shape[:2]
                 sc = min(220 / max(dw, 1), 220 / max(dh, 1), 1.0)
                 dm = cv2.resize(dm, (int(dw * sc), int(dh * sc)))

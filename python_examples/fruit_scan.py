@@ -429,22 +429,28 @@ def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=160,
     # The needle is the longest, thinnest (most elongated) dark blob — not the
     # round stem/spots. Pick the dark contour with the best length*elongation.
     cnts, _ = cv2.findContours(dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    dbg = cv2.cvtColor(dark, cv2.COLOR_GRAY2BGR) if return_mask else None
     best, best_score = None, 0.0
     for c in cnts:
         if cv2.contourArea(c) < 8:
             continue
-        (rcx, rcy), (rw, rh), ang = cv2.minAreaRect(c)
+        rect = cv2.minAreaRect(c)
+        (rcx, rcy), (rw, rh), ang = rect
         L, W = max(rw, rh), max(min(rw, rh), 1.0)
-        if L < 12 or L / W < 2.5:               # too short or not elongated
+        if dbg is not None:                       # every candidate blob = cyan box
+            cv2.drawContours(dbg, [cv2.boxPoints(rect).astype(int)], -1, (255, 255, 0), 1)
+        if L < 12 or L / W < 2.5:                 # too short or not elongated
             continue
-        score = L * (L / W)                      # favour long AND thin
+        score = L * (L / W)                        # favour long AND thin
         if score > best_score:
             theta = np.deg2rad(ang if rw >= rh else ang + 90)
             d = np.array([np.cos(theta), np.sin(theta)])
             best_score = score
             best = (np.array([rcx, rcy]) - d * L / 2, np.array([rcx, rcy]) + d * L / 2)
+    if dbg is not None and best is not None:       # chosen needle = green
+        cv2.line(dbg, tuple(best[0].astype(int)), tuple(best[1].astype(int)), (0, 255, 0), 2)
     if best is None:
-        return ({"found": False}, dark) if return_mask else {"found": False}  # noqa
+        return ({"found": False}, dbg) if return_mask else {"found": False}
     off = np.array([x0, y0])
     a, b = best[0] + off, best[1] + off
     if have_line:
@@ -454,7 +460,7 @@ def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=160,
         cross = (a + b) / 2.0
     res = {"found": True, "cross": tuple(np.round(cross).astype(int)),
            "p1": tuple(np.round(a).astype(int)), "p2": tuple(np.round(b).astype(int))}
-    return (res, dark) if return_mask else res
+    return (res, dbg) if return_mask else res
 
 
 def settle_detect(r, model, classes, args, tracker, n=15, delay=0.08):

@@ -195,8 +195,25 @@ def main():
     if args.fruit_color:
         tracker.h_center = fs.COLOR_HUES[args.fruit_color]
 
-    if r.get(K_["qsens"]) is None:
+    cur = r.get(K_["qsens"])
+    if cur is None:
         sys.exit("No joint stream — is OpenSai + the driver running?")
+    q_now = np.array(json.loads(cur))
+
+    # PRE-FLIGHT: there is NO safe-home move — the first step drives straight to
+    # the demo's pose 0 via slow joint interpolation (no collision check). Show
+    # how big that first move is so you can abort if the arm is parked far away.
+    first = next((s for s in steps if s["type"] == "move"), None)
+    if first is not None:
+        q0 = np.array(first["q"])
+        dq = np.degrees(np.linalg.norm(q0 - q_now))
+        Tn, T0 = K.fk_flange(q_now), K.fk_flange(q0)
+        print(f"\n[pre-flight] arm is {dq:.0f} deg from the plan's first pose.")
+        print(f"   flange now    ({Tn[0,3]:+.3f},{Tn[1,3]:+.3f},{Tn[2,3]:+.3f})")
+        print(f"   flange pose0  ({T0[0,3]:+.3f},{T0[1,3]:+.3f},{T0[2,3]:+.3f})  <- first move goes here")
+        if dq > 45:
+            print("   WARNING: large first move — consider freedriving the arm near "
+                  "pose 0 first, and keep a hand on the e-stop.")
     if input("Execute on the REAL robot? e-stop ready. [y/N]: ").strip().lower() not in ("y", "yes"):
         print("aborted."); return
 

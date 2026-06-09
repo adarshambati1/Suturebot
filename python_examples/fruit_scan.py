@@ -440,6 +440,7 @@ def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=160,
     # TOUCHES the apple (the needle, not stray background), and fit its long
     # axis by PCA -- robust to the round dark centre blob at the base.
     apple_dil = cv2.dilate(apple, np.ones((41, 41), np.uint8))
+    apple_near = cv2.dilate(apple, np.ones((21, 21), np.uint8))   # "touches/approaches" zone
     dark = ((gray < dark_v) & (apple_dil > 0)).astype(np.uint8) * 255
     dark = cv2.bitwise_and(dark, cv2.bitwise_not(blue))   # drop the blue cut itself
     dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
@@ -451,10 +452,12 @@ def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=160,
             continue
         cm = np.zeros(dark.shape, np.uint8)
         cv2.drawContours(cm, [c], -1, 255, -1)
-        touches_apple = cv2.countNonZero(cv2.bitwise_and(cm, apple)) > 0
+        # reaches the apple (or comes within ~20px of it) -> it's the needle,
+        # not stray background. Does NOT require touching the dark centre.
+        near_apple = cv2.countNonZero(cv2.bitwise_and(cm, apple_near)) > 0
         if dbg is not None:
             cv2.drawContours(dbg, [c], -1, (255, 255, 0), 1)   # candidates = cyan
-        if not touches_apple:
+        if not near_apple:
             continue
         pts = c.reshape(-1, 2).astype(np.float64)
         mean = pts.mean(axis=0)

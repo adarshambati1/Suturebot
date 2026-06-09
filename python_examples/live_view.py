@@ -41,7 +41,9 @@ def parse_args():
     p.add_argument("--conf", type=float, default=0.35)
     p.add_argument("--classes", nargs="+", default=list(fs.DEFAULT_FRUIT_CLASSES))
     p.add_argument("--fruit-color", choices=list(fs.COLOR_HUES.keys()), default=None)
-    p.add_argument("--no-needle", action="store_true", help="don't draw the projected needle tip")
+    p.add_argument("--show-proj", action="store_true",
+                   help="draw the calibration-projected needle tip (red x); off by "
+                        "default since it's unreliable across re-grips")
     return p.parse_args()
 
 
@@ -95,39 +97,44 @@ def main():
             fruit = tracker.detect(model, bgr, classes, args.conf, roi)
             strip = fs.detect_blue_line(bgr, fruit["box"], fs.BLUE_HSV_LO, fs.BLUE_HSV_HI) \
                 if fruit is not None else None
-            nodes = []
+            out = bgr.copy()
+            # MINIMAL overlay so it never covers the cut/needle:
+            #  - thin green fruit box (no label on the fruit)
+            #  - thin orange cut line
+            #  - green needle line + small dot
+            if fruit is not None:
+                x1, y1, x2, y2 = fruit["box"]
+                cv2.rectangle(out, (x1, y1), (x2, y2), (0, 220, 0), 1)
             if strip and strip.get("found"):
-                nodes = fs.plan_stitch_nodes(strip["p1"], strip["p2"], 3)
-            out = fs.annotate_stitch_plan(bgr, fruit, strip, nodes)
+                p1 = tuple(np.round(strip["p1"]).astype(int))
+                p2 = tuple(np.round(strip["p2"]).astype(int))
+                cv2.line(out, p1, p2, (255, 120, 0), 1)
+            nd = fs.detect_needle_darkline(bgr, line=strip, box=fruit["box"]) \
+                if fruit is not None else {"found": False}
+            if nd.get("found"):
+                cv2.line(out, nd["p1"], nd["p2"], (0, 255, 0), 2)
+                cv2.circle(out, nd["cross"], 5, (0, 255, 0), -1)
             hud = (f"{fruit['label']} {fruit['conf']:.2f}" if fruit is not None else "no fruit")
+            hud += f"  cut:{'Y' if strip and strip.get('found') else 'n'}"
+            hud += f"  needle:{'Y' if nd.get('found') else 'n'}"
         else:
             out = bgr.copy()
             hud = "raw"
 
-        # projected needle tip (red ✕, from calibration) + DETECTED magenta tip
-        # (magenta ○, from vision). If they coincide, calibration + needle offset
-        # are good. The detected one is the closed-loop re-grip signal.
-        if not args.no_needle and intr is not None:
+        # optional calibration projection (red ✕) — off by default (unreliable
+        # across re-grips); enable with --show-proj.
+        if args.show_proj and intr is not None:
             px = needle_tip_pixel(intr)
             if px is not None and 0 <= px[0] < w and 0 <= px[1] < h:
-                cv2.drawMarker(out, px, (0, 0, 255), cv2.MARKER_TILTED_CROSS, 18, 2)
-                cv2.putText(out, "proj", (px[0] + 8, px[1]),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
-        # needle as a dark thin line: search around the blue cut if found, else
-        # inside the fruit box. Draw the needle segment + marker.
-        if not args.raw and fruit is not None:
-            nd = fs.detect_needle_darkline(bgr, line=strip, box=fruit["box"])
-            if nd.get("found"):
-                cv2.line(out, nd["p1"], nd["p2"], (0, 255, 0), 2)
-                cv2.circle(out, nd["cross"], 7, (0, 255, 0), 2)
-                cv2.putText(out, "needle", (nd["cross"][0] + 9, nd["cross"][1]),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2, cv2.LINE_AA)
+                cv2.drawMarker(out, px, (0, 0, 255), cv2.MARKER_TILTED_CROSS, 14, 1)
 
         age = (time.time() - ts) if ts else None
         if age is not None:
-            hud += f"   age {age:4.2f}s"
-        cv2.putText(out, hud, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                    (0, 255, 255), 2, cv2.LINE_AA)
+            hud += f"  age {age:4.2f}s"
+        # HUD bar at the very top, away from the fruit
+        cv2.rectangle(out, (0, 0), (w, 26), (0, 0, 0), -1)
+        cv2.putText(out, hud, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                    (0, 255, 255), 1, cv2.LINE_AA)
         cv2.imshow(win, out)
         if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
             break

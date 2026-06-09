@@ -29,9 +29,11 @@ from playback_smooth import trim_pauses, moving_average
 # ============================ CONTROLS (edit me) ============================
 GLOBAL_OFFSET = np.array([0.0, 0.0, 0.0])   # world xyz shift on EVERY waypoint (m)
 
-PIERCE_DEEPEN_CM = 0.5      # deepen the INITIAL pierce by this much, along the
-                            # direction it already pierced ("same as it did").
-                            # Localized to the pierce (ramped in/out), 0 = off.
+PIERCE_DEEPEN_CM = 1.0      # extra penetration at EACH push-in below, along its own
+                            # pierce direction. More = harder push (cartesian position
+                            # control under-penetrates against contact). 0 = off.
+PIERCE_TIMES = [28.0, 78.0] # approx times (s) of the push-ins-from-below to deepen
+                            # (nearest tip apex is used; add/remove to taste)
 
 SKIP_CLAMP_EVENTS = [0, 1]  # raw clamp-transition indices to NOT actuate. 0,1 =
                             # the static first close@8.5s + open@9.2s (no motion).
@@ -89,36 +91,38 @@ def main():
     poses = [K.fk_flange(qi) for qi in q]
     P0 = poses[0][:3, 3]
 
-    # ---- initial-pierce deepening (localized bump at the actual PIERCE APEX) ----
-    # The deepest pierce = where the NEEDLE TIP is driven furthest into the apple,
-    # NOT where the clamp grabs (the grab is after the needle already retreated a
-    # bit). Find the tip apex (max tip-z) before the first moved grab, and deepen
-    # there along the empirical PLUNGE direction (how the tip actually went in).
+    # ---- push-in deepening (one localized overshoot per PIERCE_TIME) ----
+    # Each push-in's deepest point = where the NEEDLE TIP is driven furthest into
+    # the apple (max tip-z near that time). Overshoot there along the tip's plunge
+    # direction so the position controller pushes HARDER (more force) and the
+    # needle seats deeper. Applied to every push-in listed in PIERCE_TIMES.
     tips = np.array([T[:3, 3] + T[:3, :3] @ K.NEEDLE_TIP_OFFSET for T in poses])
-    flange = np.array([T[:3, 3] for T in poses])
-    closes = [i for i in range(1, len(g)) if g[i] and not g[i - 1]]
-    first_grab = next((i for i in closes if np.linalg.norm(flange[i] - P0) > 0.02), len(q))
-    first_move = int(np.argmax(np.linalg.norm(flange - P0, axis=1) > 0.01))   # the JUMP
-    apex = int(np.argmax(tips[:first_grab, 2]))      # deepest tip during the pierce
     deepen_m = PIERCE_DEEPEN_CM / 100.0
-    # penetration direction = how the tip travels going in (first move -> apex)
-    pdir = tips[apex] - tips[first_move]
-    n = np.linalg.norm(pdir)
-    pdir = pdir / n if n > 1e-6 else np.zeros(3)
-    # push deeper FROM THE JUMP: ramp in over the first move, HOLD through the
-    # whole initial pierce, taper after the first grab. (negative cm flips dir)
-    RAMP, TAPER = 12, 25
 
-    def pierce_bump(i):
-        if deepen_m == 0 or i < first_move:
-            return 0.0
-        if i < first_move + RAMP:
-            return deepen_m * (i - first_move) / RAMP
-        if i <= first_grab:
-            return deepen_m
-        if i <= first_grab + TAPER:
-            return deepen_m * (1 - (i - first_grab) / TAPER)
-        return 0.0
+    # locate each push-in: snap the requested time to the nearest tip-z apex
+    def nearest_apex(tt):
+        c = int(np.argmin(np.abs(t - tt)))
+        lo, hi = max(0, c - 30), min(len(q), c + 30)
+        return lo + int(np.argmax(tips[lo:hi, 2]))
+
+    apexes = [nearest_apex(tt) for tt in PIERCE_TIMES]
+    pdirs = []
+    for a in apexes:
+        v = tips[a] - tips[max(0, a - 25)]           # this push-in's penetration dir
+        nv = np.linalg.norm(v)
+        pdirs.append(v / nv if nv > 1e-6 else np.zeros(3))
+    RAMP, TAPER = 25, 20                              # ramp in over the rise, taper after
+
+    def pierce_off(i):
+        off = np.zeros(3)
+        if deepen_m == 0:
+            return off
+        for a, pd in zip(apexes, pdirs):
+            if a - RAMP <= i <= a:
+                off = off + deepen_m * (i - (a - RAMP)) / RAMP * pd
+            elif a < i <= a + TAPER:
+                off = off + deepen_m * (1 - (i - a) / TAPER) * pd
+        return off
 
     adj = []
     for i, T in enumerate(poses):
@@ -126,11 +130,12 @@ def main():
         for (ts, te, off) in PHASE_OFFSETS:
             if ts <= t[i] <= te:
                 pos = pos + np.asarray(off, float)
-        pos = pos + pierce_bump(i) * pdir
+        pos = pos + pierce_off(i)
         adj.append((pos, T[:3, :3]))
     if deepen_m != 0:
-        print(f"  PIERCE deepen {PIERCE_DEEPEN_CM:+.1f}cm along {np.round(pdir,2)} "
-              f"FROM THE JUMP (wp{first_move}, t={t[first_move]:.0f}s) held thru wp{first_grab}")
+        for a, pd in zip(apexes, pdirs):
+            print(f"  PIERCE deepen {PIERCE_DEEPEN_CM:+.1f}cm @ push-in t={t[a]:.0f}s "
+                  f"(wp{a}) along {np.round(pd,2)}")
     if SKIP_CLAMP_EVENTS:
         print(f"  SKIP clamp events {SKIP_CLAMP_EVENTS} (no actuation)")
 
@@ -166,10 +171,8 @@ def main():
     trans_idx = -1
     for i in range(len(q)):
         pos, R = adj[i]
-        if deepen_m != 0 and i == first_move:
-            print(f"  >> pierce deepen: ENGAGED at the jump @t={t[i]:.0f}s ({PIERCE_DEEPEN_CM:+.1f}cm)")
-        if deepen_m != 0 and i == first_grab:
-            print(f"  >> pierce deepen: releasing @t={t[i]:.0f}s")
+        if deepen_m != 0 and i in apexes:
+            print(f"  >> pierce deepen: PEAK {PIERCE_DEEPEN_CM:+.1f}cm @t={t[i]:.0f}s (push-in)")
         r.set(K_["cpos"], json.dumps(pos.tolist()))
         r.set(K_["cori"], json.dumps(R.tolist()))
         if not args.no_nullspace:

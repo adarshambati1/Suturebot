@@ -57,9 +57,11 @@ RAISE_REGRIP_TIMES = [56.0, 104.0]
 
 DESCOOP_WINDOWS = [(62.0, 72.0), (99.0, 108.0)]  # flatten the flange-z DIP (scoop) here:
                             # stitch-1 last/3rd regrip + the last stitch's grip.
-DESCOOP_STRENGTH = 0.0      # OFF -- the demo's own grip motion used to grip the needle
-                            # fine; de-scooping just lifted grabs into the air. 0 = use
-                            # the demo motion as-is. (raise to soften a real scoop if needed)
+DESCOOP_STRENGTH = 0.5      # soften the scoop (the ~5cm plunge down to the grab). It's a
+                            # DIAL: 0 = full demo scoop (grabs deepest at the needle),
+                            # 1 = flat (grabs high, in the air). 0.5 ~= halfway. Now that the
+                            # global -2.5cm height is set, tune this so it grabs the needle
+                            # without a dramatic dig: lower if it grabs high, raise if it digs.
 
 GRIP12_X_BACK_CM = 1.0      # pull stitch-1 grips 1&2 (catch ~36s + regrip ~51s) BACK in -x
                             # by this much -- less far forward, but NOT onto the pierce plane

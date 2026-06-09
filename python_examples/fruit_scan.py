@@ -398,11 +398,17 @@ def _seg_intersect(p1, p2, p3, p4):
 
 
 def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=160,
-                           return_mask=False):
+                           return_mask=False, ee_anchor=None, ee_align_floor=0.25):
     """Find the needle as a dark thin line. Search region is a band around the
     blue cut line if given, else the fruit box. Returns {found, cross, p1, p2}
     in full-image pixels (cross = where it crosses the cut, or the segment
-    midpoint if no cut line), or {found: False}."""
+    midpoint if no cut line), or {found: False}.
+
+    End-effector prior: the needle is held by the jaws, which sit at a fixed
+    image spot (camera is wrist-mounted) -- `ee_anchor`, default bottom-centre.
+    A candidate's score is scaled by how collinear its long axis is with the line
+    back to that anchor, so the needle-in-the-forceps beats off-axis distractors.
+    ee_align_floor=1.0 disables the prior (factor always 1)."""
     fail = ({"found": False}, None) if return_mask else {"found": False}
     have_line = bool(line and line.get("found"))
     if have_line:
@@ -418,6 +424,9 @@ def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=160,
         return fail
     if x1 <= x0 or y1 <= y0:
         return fail
+    off = np.array([x0, y0])
+    anchor = (np.array([bgr.shape[1] / 2.0, float(bgr.shape[0])])
+              if ee_anchor is None else np.asarray(ee_anchor, float))
     crop = bgr[y0:y1, x0:x1]
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
@@ -468,7 +477,13 @@ def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=160,
         aspect = float(s[0] / (s[1] + 1e-6))
         if length < 12 or aspect < 2.2:           # not a line
             continue
-        score = length * aspect
+        # End-effector prior: favour candidates whose long axis points back
+        # toward the jaws (anchor). |cos(angle)| in [0,1]; scaled into
+        # [ee_align_floor, 1] so a strong but off-axis line isn't hard-killed.
+        to_anchor = anchor - (mean + off)
+        na = np.linalg.norm(to_anchor)
+        align = abs(float(axis @ (to_anchor / na))) if na > 1e-6 else 1.0
+        score = length * aspect * (ee_align_floor + (1.0 - ee_align_floor) * align)
         if score > best_score:
             best_score = score
             best = (mean + axis * t.min(), mean + axis * t.max())
@@ -476,7 +491,6 @@ def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=160,
         cv2.line(dbg, tuple(best[0].astype(int)), tuple(best[1].astype(int)), (0, 255, 0), 2)
     if best is None:
         return ({"found": False}, dbg) if return_mask else {"found": False}
-    off = np.array([x0, y0])
     a, b = best[0] + off, best[1] + off
     if have_line:
         c = _seg_intersect(a, b, bp1, bp2)
@@ -1386,7 +1400,7 @@ def parse_args():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default="127.0.0.1", help="Redis host (default localhost)")
     p.add_argument("--port", type=int, default=6379, help="Redis port (default 6379)")
-    p.add_argument("--model", default="yolov8n.pt", help="ultralytics YOLO weights")
+    p.add_argument("--model", default="yolov8s.pt", help="ultralytics YOLO weights")
     p.add_argument("--conf", type=float, default=0.35, help="min detection confidence")
     p.add_argument("--classes", nargs="+", default=list(DEFAULT_FRUIT_CLASSES),
                    help="fruit class names to accept")

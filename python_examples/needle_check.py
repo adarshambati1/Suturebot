@@ -45,7 +45,7 @@ def parse_args():
     p.add_argument("--dark-v", type=int, default=160,
                    help="needle darkness threshold (lower = stricter dark; default 160)")
     p.add_argument("--conf", type=float, default=0.35, help="min YOLO confidence")
-    p.add_argument("--model", default="yolov8n.pt", help="ultralytics weights")
+    p.add_argument("--model", default="yolov8s.pt", help="ultralytics weights")
     p.add_argument("--classes", nargs="+", default=list(fs.DEFAULT_FRUIT_CLASSES),
                    help="fruit classes to accept")
     p.add_argument("--fruit-color", default=None, help="seed the colour tracker")

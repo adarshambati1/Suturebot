@@ -57,7 +57,7 @@ def parse_args():
     p.add_argument("--port", type=int, default=6379)
     p.add_argument("--robot", default="Titania")
     p.add_argument("--raw", action="store_true", help="just the stream, no detection")
-    p.add_argument("--model", default="yolov8n.pt")
+    p.add_argument("--model", default="yolov8s.pt")
     p.add_argument("--conf", type=float, default=0.35)
     p.add_argument("--classes", nargs="+", default=list(fs.DEFAULT_FRUIT_CLASSES))
     p.add_argument("--fruit-color", choices=list(fs.COLOR_HUES.keys()), default=None)

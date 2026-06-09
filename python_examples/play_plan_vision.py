@@ -133,6 +133,9 @@ def main():
     ap.add_argument("--conf", type=float, default=0.2)
     ap.add_argument("--fruit-color", default=None)
     ap.add_argument("--dark-v", type=int, default=160)
+    ap.add_argument("--max-correction", type=float, default=0.02,
+                    help="reject a vision regrip correction larger than this (m) "
+                         "and fall back to the taught pose (default 0.02 = 2cm)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=6379)
     args = ap.parse_args()
@@ -245,14 +248,20 @@ def main():
             N_ref = refs.get(ri)
             if N_now is not None and N_ref is not None:
                 delta = N_now - N_ref
-                T = K.fk_flange(q_demo); T[:3, 3] = T[:3, 3] + delta
-                q_corr, ok, pe, oe = K.ik_flange(T, q_demo)
-                if ok:
-                    print(f"        VISION-CORRECT by {np.round(delta*1000,1)}mm "
-                          f"(IK pe={pe*1000:.1f}mm)")
-                    goto(r, K_, q_corr, move_time)
+                dmag = float(np.linalg.norm(delta))
+                if dmag > args.max_correction:                 # gate: implausible jump
+                    print(f"        REJECT correction {dmag*1000:.0f}mm > "
+                          f"{args.max_correction*1000:.0f}mm cap — taught pose "
+                          "(likely a vision glitch)")
                 else:
-                    print(f"        IK failed (pe={pe*1000:.1f}mm) — staying at taught pose")
+                    T = K.fk_flange(q_demo); T[:3, 3] = T[:3, 3] + delta
+                    q_corr, ok, pe, oe = K.ik_flange(T, q_demo)
+                    if ok:
+                        print(f"        VISION-CORRECT by {np.round(delta*1000,1)}mm "
+                              f"(IK pe={pe*1000:.1f}mm)")
+                        goto(r, K_, q_corr, move_time)
+                    else:
+                        print(f"        IK failed (pe={pe*1000:.1f}mm) — taught pose")
             else:
                 why = "needle not seen" if N_now is None else "no ref recorded"
                 print(f"        blind fallback ({why}) — taught pose")

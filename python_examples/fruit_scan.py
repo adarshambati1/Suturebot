@@ -397,17 +397,23 @@ def _seg_intersect(p1, p2, p3, p4):
     return None
 
 
-def detect_needle_darkline(bgr, line, band=45, dark_v=90):
-    """Find the needle as a dark thin line crossing the blue cut line near the
-    entry point (more robust than a tiny magenta mark). Returns
-    {found, cross, p1, p2} in full-image pixels, or {found: False}."""
-    if not line or not line.get("found"):
+def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=90):
+    """Find the needle as a dark thin line. Search region is a band around the
+    blue cut line if given, else the fruit box. Returns {found, cross, p1, p2}
+    in full-image pixels (cross = where it crosses the cut, or the segment
+    midpoint if no cut line), or {found: False}."""
+    have_line = bool(line and line.get("found"))
+    if have_line:
+        bp1, bp2 = np.asarray(line["p1"]), np.asarray(line["p2"])
+        x0 = max(int(min(bp1[0], bp2[0]) - band), 0)
+        x1 = min(int(max(bp1[0], bp2[0]) + band), bgr.shape[1])
+        y0 = max(int(min(bp1[1], bp2[1]) - band), 0)
+        y1 = min(int(max(bp1[1], bp2[1]) + band), bgr.shape[0])
+    elif box is not None:
+        x0, y0, x1, y1 = (max(int(box[0]), 0), max(int(box[1]), 0),
+                          min(int(box[2]), bgr.shape[1]), min(int(box[3]), bgr.shape[0]))
+    else:
         return {"found": False}
-    bp1, bp2 = np.asarray(line["p1"]), np.asarray(line["p2"])
-    x0 = max(int(min(bp1[0], bp2[0]) - band), 0)
-    x1 = min(int(max(bp1[0], bp2[0]) + band), bgr.shape[1])
-    y0 = max(int(min(bp1[1], bp2[1]) - band), 0)
-    y1 = min(int(max(bp1[1], bp2[1]) + band), bgr.shape[0])
     if x1 <= x0 or y1 <= y0:
         return {"found": False}
     crop = bgr[y0:y1, x0:x1]
@@ -423,13 +429,17 @@ def detect_needle_darkline(bgr, line, band=45, dark_v=90):
     if segs is None:
         return {"found": False}
     off = np.array([x0, y0])
-    b1, b2 = bp1 - off, bp2 - off
     best, best_len = None, 0
+    if have_line:
+        b1, b2 = bp1 - off, bp2 - off
     for s in segs[:, 0, :]:
         a, b = np.array([s[0], s[1]]), np.array([s[2], s[3]])
-        c = _seg_intersect(a, b, b1, b2)
-        if c is None:
-            continue
+        if have_line:
+            c = _seg_intersect(a, b, b1, b2)   # must cross the cut
+            if c is None:
+                continue
+        else:
+            c = (a + b) / 2.0                   # no cut line: use segment midpoint
         ln = np.linalg.norm(b - a)
         if ln > best_len:
             best_len, best = ln, (a, b, c)

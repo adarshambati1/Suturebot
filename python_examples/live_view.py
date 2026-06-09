@@ -113,14 +113,14 @@ def main():
                 cv2.drawMarker(out, px, (0, 0, 255), cv2.MARKER_TILTED_CROSS, 18, 2)
                 cv2.putText(out, "proj", (px[0] + 8, px[1]),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
-        # needle as a dark thin line crossing the blue cut (more reliable than
-        # the tiny magenta mark). Draw the needle segment + entry crossing.
-        if not args.raw and strip and strip.get("found"):
-            nd = fs.detect_needle_darkline(bgr, strip)
+        # needle as a dark thin line: search around the blue cut if found, else
+        # inside the fruit box. Draw the needle segment + marker.
+        if not args.raw and fruit is not None:
+            nd = fs.detect_needle_darkline(bgr, line=strip, box=fruit["box"])
             if nd.get("found"):
                 cv2.line(out, nd["p1"], nd["p2"], (0, 255, 0), 2)
                 cv2.circle(out, nd["cross"], 7, (0, 255, 0), 2)
-                cv2.putText(out, "needle@cut", (nd["cross"][0] + 9, nd["cross"][1]),
+                cv2.putText(out, "needle", (nd["cross"][0] + 9, nd["cross"][1]),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2, cv2.LINE_AA)
 
         age = (time.time() - ts) if ts else None

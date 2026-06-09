@@ -397,7 +397,7 @@ def _seg_intersect(p1, p2, p3, p4):
     return None
 
 
-def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=90,
+def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=160,
                            return_mask=False):
     """Find the needle as a dark thin line. Search region is a band around the
     blue cut line if given, else the fruit box. Returns {found, cross, p1, p2}

@@ -46,7 +46,7 @@ def parse_args():
                         "default since it's unreliable across re-grips")
     p.add_argument("--needle-debug", action="store_true",
                    help="show the dark mask the needle detector sees (to tune --dark-v)")
-    p.add_argument("--dark-v", type=int, default=90,
+    p.add_argument("--dark-v", type=int, default=160,
                    help="needle darkness threshold (lower = only very dark pixels; "
                         "raise until the needle shows but the apple doesn't)")
     return p.parse_args()

@@ -1,0 +1,60 @@
+<redisConfiguration namespacePrefix="opensai" />
+
+<!-- Replay-tuned variant of suturebot_grav_real.xml (keep the plain one as-is).
+
+     Same real-robot setup (no <simvizConfiguration>; state from the Flexiv
+     driver under "Titania"). gravityCompensation stays OFF/default on purpose:
+     the Flexiv driver already compensates the ARM's gravity, so turning OpenSai
+     comp on double-compensates and drives the arm UP.
+
+     The problem this fixes: the driver does NOT know the ~1.24kg tool (grav_base
+     1.186 + hemostat 0.05 + needle), so that weight is uncompensated and the
+     soft default joint PD (kp=50, ki=0) settled BELOW the commanded angles
+     ("always lower"). The fix here is a small INTEGRAL term on the joint task:
+     it ramps torque until the steady-state position error is zero, supplying the
+     missing tool-holding torque WITHOUT adding a gravity term (so the arm is not
+     double-compensated). kp is also raised for a stiffer hold.
+
+     BETTER fix if you can: set the tool payload (~1.24kg + CoM/TCP) on the Flexiv
+     so the driver compensates the tool too -- then the plain real XML holds
+     position and you don't need the integral. That also fixes the free-drive sag.
+
+     Tuning: if the arm oscillates/hunts, lower ki toward 0. If it still sags,
+     raise ki. Launch this for playback_smooth / play_plan / play_plan_vision. -->
+
+<robotControlConfiguration robotName="Titania"
+	robotModelFile="${ROBOT_FILES_FOLDER}/Rizon4s_Grav_hemostat.urdf"
+	getMassMatrixFromRedis="false">
+
+	<logger logFolderName="log_files/suturebot_grav_real_replay/controllers"
+		enabledAtStartup="true"
+		addTimestampToFilename="false" />
+
+	<controller name="cartesian_controller">
+		<motionForceTask name="cartesian_task"
+			linkName="flange">
+			<velocitySaturation enabled="false" />
+
+			<otg type="disabled" />
+
+			<positionGains kp="400.0" kv="40.0" />
+			<orientationGains kp="400.0" kv="40.0" />
+		</motionForceTask>
+
+		<jointTask name="joint_task">
+			<otg type="disabled" />
+		</jointTask>
+	</controller>
+
+	<controller name="joint_controller">
+		<jointTask name="joint_task">
+			<velocitySaturation enabled="true" />
+			<otg type="disabled" />
+			<!-- gravity comp stays OFF (driver handles arm gravity). Integral
+			     cancels the steady-state droop from the uncompensated tool weight
+			     without double-comping the arm. -->
+			<jointGains kp="100.0" kv="20.0" ki="10.0" />
+		</jointTask>
+	</controller>
+
+</robotControlConfiguration>

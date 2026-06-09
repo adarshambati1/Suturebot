@@ -42,6 +42,12 @@ PULL_REBASE = False         # also shift the pull grab to the first-grab spot. O
                             # jaws up closed ABOVE the needle (missed) -> grab where
                             # the needle actually is (the demo's original 3rd spot)
 
+RAISE_TOP_REGRIP_CM = 0.25  # lift these regrips this much (+z) so the jaws stop
+                            # biting ~1/4cm into the apple. 0 = off.
+RAISE_REGRIP_TIMES = [56.0, 104.0]  # the LAST on-top grab of each pierce (s); snapped
+                            # to the nearest grab. pierce1 ~56s (wp131); pierce2 ~104s
+                            # (best guess -- tell me the real time if it's wrong)
+
 SKIP_CLAMP_EVENTS = [0, 1]  # raw clamp-transition indices to NOT actuate. 0,1 =
                             # the static first close@8.5s + open@9.2s (no motion).
                             # (events 2,3 @17-22.5s are also static if you want them too)
@@ -118,29 +124,50 @@ def main():
         v = tips[a] - tips[max(0, a - 25)]           # this push-in's penetration dir
         nv = np.linalg.norm(v)
         pdirs.append(v / nv if nv > 1e-6 else np.zeros(3))
-    RAMP, TAPER = 25, 20                              # ramp in over the rise, taper after
+    # ramp in over the rise, HOLD at max so the controller actually pushes the
+    # extra cm in against the apple (a 1-frame peak never gets realized), taper after
+    RAMP, HOLD, TAPER = 20, 20, 12
 
     def pierce_off(i):
         off = np.zeros(3)
         if deepen_m == 0:
             return off
         for a, pd in zip(apexes, pdirs):
-            if a - RAMP <= i <= a:
+            if a - RAMP <= i < a:
                 off = off + deepen_m * (i - (a - RAMP)) / RAMP * pd
-            elif a < i <= a + TAPER:
-                off = off + deepen_m * (1 - (i - a) / TAPER) * pd
+            elif a <= i < a + HOLD:
+                off = off + deepen_m * pd                       # HOLD at full depth
+            elif a + HOLD <= i <= a + HOLD + TAPER:
+                off = off + deepen_m * (1 - (i - a - HOLD) / TAPER) * pd
         return off
 
     # ---- top cleanup: cut the little loop + pull-through from the first-grab spot ----
     flange = np.array([T[:3, 3] for T in poses])
     keep = list(range(len(q)))
+    closes_all = [i for i in range(1, len(g)) if g[i] and not g[i - 1]]
+    opens_all = [i for i in range(1, len(g)) if not g[i] and g[i - 1]]
+
+    # ---- lift the last on-top regrip of each pierce (+z) so jaws don't bite the apple ----
+    raise_m = RAISE_TOP_REGRIP_CM / 100.0
+    raise_grabs = []
+    for tt in RAISE_REGRIP_TIMES:
+        cand = [c for c in closes_all if abs(t[c] - tt) < 9]
+        if cand:
+            raise_grabs.append(min(cand, key=lambda c: abs(t[c] - tt)))
+    RW = 12
+
+    def raise_off(i):
+        if raise_m == 0:
+            return np.zeros(3)
+        for c in raise_grabs:
+            if abs(i - c) <= RW:
+                return np.array([0.0, 0.0, raise_m])
+        return np.zeros(3)
 
     def pull_offset(i):
         return np.zeros(3)
 
     if CUT_TOP_LOOP:
-        closes_all = [i for i in range(1, len(g)) if g[i] and not g[i - 1]]
-        opens_all = [i for i in range(1, len(g)) if not g[i] and g[i - 1]]
         top = [i for i in closes_all if 33 < t[i] < 76]      # grabs at the top of the apple
         if len(top) >= 2:
             third = top[int(np.argmin([flange[i, 2] for i in top]))]   # lower/drifted grab = pull
@@ -166,7 +193,7 @@ def main():
 
     adj = []
     for i in keep:
-        pos = poses[i][:3, 3] + GLOBAL_OFFSET + pierce_off(i) + pull_offset(i)
+        pos = poses[i][:3, 3] + GLOBAL_OFFSET + pierce_off(i) + pull_offset(i) + raise_off(i)
         for (ts, te, off) in PHASE_OFFSETS:
             if ts <= t[i] <= te:
                 pos = pos + np.asarray(off, float)
@@ -177,6 +204,9 @@ def main():
                   f"(wp{a}) along {np.round(pd,2)}")
     if SKIP_CLAMP_EVENTS:
         print(f"  SKIP clamp events {SKIP_CLAMP_EVENTS} (no actuation)")
+    if raise_m != 0 and raise_grabs:
+        print(f"  RAISE regrips +{RAISE_TOP_REGRIP_CM}cm (+z) at " +
+              ", ".join(f"t={t[c]:.0f}s(wp{c})" for c in raise_grabs))
 
     r = redis.Redis(host=args.host, port=args.port)
     r.ping()

@@ -50,7 +50,7 @@ def needle_tip_pixel(intr):
     loaded calibration. Returns (u, v) or None."""
     T = fs.T_FLANGE_CAM
     R_fc, t_fc = T[:3, :3], T[:3, 3]
-    tip_cam = R_fc.T @ (fs.NEEDLE_TIP_OFFSET - t_fc)   # both fixed in flange
+    tip_cam = R_fc.T @ (fs.EE_OFFSET_FLANGE - t_fc)   # both fixed in flange
     if tip_cam[2] <= 1e-4:
         return None
     u = intr["fx"] * tip_cam[0] / tip_cam[2] + intr["ppx"]

@@ -96,10 +96,12 @@ def main():
                     (closes[0] if closes else len(q)))
     RAMP_IN, TAPER = 40, 20
     deepen_m = PIERCE_DEEPEN_CM / 100.0
-    j0 = max(0, push_end - 20)
-    pdir = poses[push_end][:3, 3] - poses[j0][:3, 3]
-    n = np.linalg.norm(pdir)
-    pdir = pdir / n if n > 1e-6 else np.zeros(3)
+    # push along the NEEDLE AXIS (where the needle points) at the pierce pose --
+    # that's the penetration direction ("push the needle in more"), NOT the net
+    # lateral approach motion. Set PIERCE_DEEPEN_CM negative to flip if it backs out.
+    needle_unit = K.NEEDLE_TIP_OFFSET / np.linalg.norm(K.NEEDLE_TIP_OFFSET)
+    pdir = poses[push_end][:3, :3] @ needle_unit
+    pdir = pdir / np.linalg.norm(pdir)
 
     def pierce_bump(i):
         if deepen_m <= 0:

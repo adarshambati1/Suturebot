@@ -22,12 +22,27 @@ Press q or Esc to quit.
 from __future__ import annotations
 import argparse
 import time
+from collections import deque
 
 import cv2
 import numpy as np
 import redis
 
 import fruit_scan as fs
+
+
+def needle_consensus(hist, min_frac=0.5):
+    """Most-consistent needle over a rolling window: median endpoints of the
+    frames that found it (normalised order). Returns (p1, p2) or None."""
+    found = [x for x in hist if x is not None]
+    if len(found) < max(2, int(len(hist) * min_frac)):
+        return None
+    P1, P2 = [], []
+    for a, b in found:
+        if (a[0], a[1]) > (b[0], b[1]):
+            a, b = b, a
+        P1.append(a); P2.append(b)
+    return np.median(P1, axis=0), np.median(P2, axis=0)
 
 
 def parse_args():
@@ -49,6 +64,9 @@ def parse_args():
     p.add_argument("--dark-v", type=int, default=160,
                    help="needle darkness threshold (lower = only very dark pixels; "
                         "raise until the needle shows but the apple doesn't)")
+    p.add_argument("--needle-window", type=int, default=7,
+                   help="frames to aggregate; the needle shown is the consensus "
+                        "(median) over this window (default 7)")
     return p.parse_args()
 
 
@@ -89,6 +107,7 @@ def main():
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     print("[live] press q/Esc to quit.")
     classes = set(args.classes)
+    needle_hist = deque(maxlen=args.needle_window)
     while True:
         bgr, ts = fs.read_color(r)
         if bgr is None:
@@ -109,9 +128,12 @@ def main():
             if fruit is not None:
                 nd, dmask = fs.detect_needle_darkline(
                     bgr, line=strip, box=fruit["box"], dark_v=args.dark_v, return_mask=True)
-            if nd.get("found"):
-                cv2.line(out, nd["p1"], nd["p2"], (0, 255, 0), 2)
-                cv2.circle(out, nd["cross"], 5, (0, 255, 0), -1)
+            needle_hist.append((np.array(nd["p1"]), np.array(nd["p2"]))
+                               if nd.get("found") else None)
+            cons = needle_consensus(needle_hist)
+            if cons is not None:                 # stable, most-common needle
+                cv2.line(out, tuple(cons[0].astype(int)), tuple(cons[1].astype(int)),
+                         (0, 255, 0), 2)
             if args.needle_debug and dmask is not None:
                 # show the dark mask (what the detector sees) in the corner;
                 # cyan = candidate blobs, green = chosen needle.
@@ -122,7 +144,7 @@ def main():
                 out[h - dm.shape[0]:h, w - dm.shape[1]:w] = dm
             hud = (f"{fruit['label']} {fruit['conf']:.2f}" if fruit is not None else "no fruit")
             hud += f"  cut:{'Y' if strip and strip.get('found') else 'n'}"
-            hud += f"  needle:{'Y' if nd.get('found') else 'n'}"
+            hud += f"  needle:{'Y' if cons is not None else 'n'}"
         else:
             out = bgr.copy()
             hud = "raw"

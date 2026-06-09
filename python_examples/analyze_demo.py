@@ -30,6 +30,24 @@ import os
 import numpy as np
 
 
+def clean_gripper(t, q, g, min_grip_sec=5.0, min_grip_move=8.0):
+    """Zero out fumble grips: CLOSED phases shorter than min_grip_sec AND with
+    less than min_grip_move (deg) of joint motion = accidental grips -> treat as
+    open. Returns a cleaned gripper array."""
+    g = np.asarray(g).astype(int).copy()
+    trans = [i + 1 for i in np.where(np.diff(g) != 0)[0]]
+    bounds = [0] + trans + [len(t) - 1]
+    removed = []
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        if g[a] > 0:                                    # a CLOSED phase
+            dur = t[b] - t[a]
+            move = np.degrees(np.linalg.norm(q[b] - q[a]))
+            if dur < min_grip_sec and move < min_grip_move:
+                g[a:b] = 0
+                removed.append((float(t[a]), float(t[b])))
+    return g, removed
+
+
 def extract_plan(t, q, g, vel_thresh=0.06, min_hold=0.6, dedup_deg=6.0, smooth=25):
     g = np.asarray(g).astype(int)
     dt = np.gradient(t)
@@ -81,12 +99,21 @@ def main():
                     help="min seconds held to count as a key-pose")
     ap.add_argument("--dedup-deg", type=float, default=6.0,
                     help="collapse consecutive key-poses within this joint distance (deg)")
+    ap.add_argument("--min-grip-sec", type=float, default=5.0,
+                    help="drop CLOSED phases shorter than this (s) as fumbles")
+    ap.add_argument("--min-grip-move", type=float, default=8.0,
+                    help="...and with less than this joint motion (deg)")
+    ap.add_argument("--no-clean", action="store_true", help="don't filter fumble grips")
     ap.add_argument("--out", default=None, help="output plan json (default <demo>_plan.json)")
     args = ap.parse_args()
 
     d = np.load(args.demo, allow_pickle=True)
     t, q, g = d["times"], d["q"], d["gripper"]
     robot = str(d["robot"]) if "robot" in d.files else "Titania"
+    if not args.no_clean:
+        g, removed = clean_gripper(t, q, g, args.min_grip_sec, args.min_grip_move)
+        for a, b in removed:
+            print(f"[clean] dropped fumble grip {a:.1f}-{b:.1f}s")
     steps = extract_plan(t, q, g, args.vel_thresh, args.min_hold, args.dedup_deg)
 
     print(f"demo: {t[-1]:.0f}s, {len(t)} samples -> {len(steps)} plan steps\n")

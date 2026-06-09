@@ -51,6 +51,12 @@ def main():
     ap.add_argument("--raw", action="store_true", help="replay raw (no smoothing/trim)")
     ap.add_argument("--no-nullspace", action="store_true",
                     help="don't pin the demo joint config in the cartesian nullspace")
+    ap.add_argument("--extra-push", type=float, default=0.0,
+                    help="cm of EXTRA penetration on the initial pierce (the segment "
+                         "before the first clamp-close), along the needle axis. The "
+                         "cartesian controller under-penetrates vs the hand-pushed demo "
+                         "by ~force/kp; this overshoots the target to push harder. "
+                         "Ramps 0->full over the pierce. Start small (~1) and tune up.")
     ap.add_argument("--init-grip", action="store_true",
                     help="force the gripper to the demo's initial state (default: leave as-is)")
     ap.add_argument("--robot", default=None, help="override; default = robot the demo was recorded on")
@@ -108,10 +114,23 @@ def main():
     else:
         print("  leaving gripper AS-IS at start (use --init-grip to force demo's initial state)")
 
+    # initial-pierce window = up to the FIRST clamp-close (the through/regrip).
+    closes = [i for i in range(1, len(g)) if g[i] and not g[i - 1]]
+    push_end = closes[0] if closes else len(q)
+    extra_m = args.extra_push / 100.0
+    needle_dir = K.NEEDLE_TIP_OFFSET / np.linalg.norm(K.NEEDLE_TIP_OFFSET)
+    if extra_m > 0:
+        print(f"  EXTRA PUSH: +{args.extra_push:.1f} cm along needle axis, ramped over "
+              f"the initial pierce (waypoints 0..{push_end}).")
+
     print(f"replaying at {args.speed}x in cartesian space ...")
     for i in range(len(q)):
         T = poses[i]
-        r.set(K_["cpos"], json.dumps(T[:3, 3].tolist()))
+        pos = T[:3, 3].copy()
+        if extra_m > 0 and i < push_end:
+            ramp = (i + 1) / push_end                       # 0 -> 1 across the pierce
+            pos = pos + extra_m * ramp * (T[:3, :3] @ needle_dir)
+        r.set(K_["cpos"], json.dumps(pos.tolist()))
         r.set(K_["cori"], json.dumps(T[:3, :3].tolist()))
         if not args.no_nullspace:                       # pin elbow near demo config
             r.set(K_["njoint"], json.dumps(q[i].tolist()))

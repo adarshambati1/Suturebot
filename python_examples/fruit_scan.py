@@ -434,32 +434,41 @@ def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=160,
         big = max(acnts, key=cv2.contourArea)
         apple = np.zeros_like(apple)
         cv2.drawContours(apple, [big], -1, 255, -1)
-    # Needle = DARK pixels that sit ON the apple footprint (excludes the dark
-    # table/gripper/shadows that were fusing into one blob).
-    dark = ((gray < dark_v) & (apple > 0)).astype(np.uint8) * 255
+    # Needle = the DARK line approaching the apple, connected to its dark centre.
+    # Search dark pixels within the apple footprint grown by a margin (so the
+    # approaching/protruding part is included), keep the dark component that
+    # TOUCHES the apple (the needle, not stray background), and fit its long
+    # axis by PCA -- robust to the round dark centre blob at the base.
+    apple_dil = cv2.dilate(apple, np.ones((41, 41), np.uint8))
+    dark = ((gray < dark_v) & (apple_dil > 0)).astype(np.uint8) * 255
     dark = cv2.bitwise_and(dark, cv2.bitwise_not(blue))   # drop the blue cut itself
-    dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-    # The needle is the longest, thinnest (most elongated) dark blob — not the
-    # round stem/spots. Pick the dark contour with the best length*elongation.
+    dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     cnts, _ = cv2.findContours(dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     dbg = cv2.cvtColor(dark, cv2.COLOR_GRAY2BGR) if return_mask else None
     best, best_score = None, 0.0
     for c in cnts:
-        if cv2.contourArea(c) < 8:
+        if cv2.contourArea(c) < 10:
             continue
-        rect = cv2.minAreaRect(c)
-        (rcx, rcy), (rw, rh), ang = rect
-        L, W = max(rw, rh), max(min(rw, rh), 1.0)
-        if dbg is not None:                       # every candidate blob = cyan box
-            cv2.drawContours(dbg, [cv2.boxPoints(rect).astype(int)], -1, (255, 255, 0), 1)
-        if L < 12 or L / W < 2.5:                 # too short or not elongated
+        cm = np.zeros(dark.shape, np.uint8)
+        cv2.drawContours(cm, [c], -1, 255, -1)
+        touches_apple = cv2.countNonZero(cv2.bitwise_and(cm, apple)) > 0
+        if dbg is not None:
+            cv2.drawContours(dbg, [c], -1, (255, 255, 0), 1)   # candidates = cyan
+        if not touches_apple:
             continue
-        score = L * (L / W)                        # favour long AND thin
+        pts = c.reshape(-1, 2).astype(np.float64)
+        mean = pts.mean(axis=0)
+        _, s, vt = np.linalg.svd(pts - mean, full_matrices=False)
+        axis = vt[0]
+        t = (pts - mean) @ axis
+        length = float(t.max() - t.min())
+        aspect = float(s[0] / (s[1] + 1e-6))
+        if length < 12 or aspect < 2.2:           # not a line
+            continue
+        score = length * aspect
         if score > best_score:
-            theta = np.deg2rad(ang if rw >= rh else ang + 90)
-            d = np.array([np.cos(theta), np.sin(theta)])
             best_score = score
-            best = (np.array([rcx, rcy]) - d * L / 2, np.array([rcx, rcy]) + d * L / 2)
+            best = (mean + axis * t.min(), mean + axis * t.max())
     if dbg is not None and best is not None:       # chosen needle = green
         cv2.line(dbg, tuple(best[0].astype(int)), tuple(best[1].astype(int)), (0, 255, 0), 2)
     if best is None:

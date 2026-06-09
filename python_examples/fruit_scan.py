@@ -383,6 +383,101 @@ def plan_stitch_nodes(p1, p2, n):
     return [p1 + (p2 - p1) * f for f in np.linspace(0.15, 0.85, n)]
 
 
+def _seg_intersect(p1, p2, p3, p4):
+    """Intersection point of segments p1p2 and p3p4, or None."""
+    p1, p2, p3, p4 = (np.asarray(x, float) for x in (p1, p2, p3, p4))
+    d1, d2 = p2 - p1, p4 - p3
+    denom = d1[0] * d2[1] - d1[1] * d2[0]
+    if abs(denom) < 1e-9:
+        return None
+    t = ((p3[0] - p1[0]) * d2[1] - (p3[1] - p1[1]) * d2[0]) / denom
+    u = ((p3[0] - p1[0]) * d1[1] - (p3[1] - p1[1]) * d1[0]) / denom
+    if 0 <= t <= 1 and 0 <= u <= 1:
+        return p1 + t * d1
+    return None
+
+
+def detect_needle_darkline(bgr, line, band=45, dark_v=90):
+    """Find the needle as a dark thin line crossing the blue cut line near the
+    entry point (more robust than a tiny magenta mark). Returns
+    {found, cross, p1, p2} in full-image pixels, or {found: False}."""
+    if not line or not line.get("found"):
+        return {"found": False}
+    bp1, bp2 = np.asarray(line["p1"]), np.asarray(line["p2"])
+    x0 = max(int(min(bp1[0], bp2[0]) - band), 0)
+    x1 = min(int(max(bp1[0], bp2[0]) + band), bgr.shape[1])
+    y0 = max(int(min(bp1[1], bp2[1]) - band), 0)
+    y1 = min(int(max(bp1[1], bp2[1]) + band), bgr.shape[0])
+    if x1 <= x0 or y1 <= y0:
+        return {"found": False}
+    crop = bgr[y0:y1, x0:x1]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    blue = cv2.dilate(cv2.inRange(hsv, BLUE_HSV_LO, BLUE_HSV_HI),
+                      np.ones((5, 5), np.uint8))
+    dark = ((gray < dark_v).astype(np.uint8) * 255)
+    dark = cv2.bitwise_and(dark, cv2.bitwise_not(blue))   # drop the blue line itself
+    edges = cv2.Canny(dark, 30, 100)
+    segs = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=18,
+                           minLineLength=15, maxLineGap=8)
+    if segs is None:
+        return {"found": False}
+    off = np.array([x0, y0])
+    b1, b2 = bp1 - off, bp2 - off
+    best, best_len = None, 0
+    for s in segs[:, 0, :]:
+        a, b = np.array([s[0], s[1]]), np.array([s[2], s[3]])
+        c = _seg_intersect(a, b, b1, b2)
+        if c is None:
+            continue
+        ln = np.linalg.norm(b - a)
+        if ln > best_len:
+            best_len, best = ln, (a, b, c)
+    if best is None:
+        return {"found": False}
+    a, b, c = best
+    return {"found": True,
+            "cross": tuple((c + off).astype(int)),
+            "p1": tuple((a + off).astype(int)),
+            "p2": tuple((b + off).astype(int))}
+
+
+def settle_detect(r, model, classes, args, tracker, n=15, delay=0.08):
+    """The apple + cut don't move, so grab n frames over ~1-2 s and aggregate to
+    a stable best-guess: highest-confidence fruit, and the median blue cut line
+    (robust to per-frame jitter). Returns (fruit, line, last_bgr)."""
+    fruits, lines, last = [], [], None
+    for _ in range(n):
+        bgr = fresh_color(r)
+        if bgr is None:
+            time.sleep(delay); continue
+        last = bgr
+        roi = tuple(args.roi) if args.roi else (0, 0, bgr.shape[1], bgr.shape[0])
+        f = tracker.detect(model, bgr, classes, args.conf, roi)
+        if f is None:
+            time.sleep(delay); continue
+        fruits.append(f)
+        ln = detect_blue_line(bgr, f["box"], BLUE_HSV_LO, BLUE_HSV_HI)
+        if ln.get("found"):
+            lines.append(ln)
+        time.sleep(delay)
+    fruit = max(fruits, key=lambda x: x["conf"]) if fruits else None
+    line = None
+    if lines:
+        P1, P2 = [], []
+        for ln in lines:                     # normalize endpoint order, then median
+            a, b = np.asarray(ln["p1"], float), np.asarray(ln["p2"], float)
+            if (a[0], a[1]) > (b[0], b[1]):
+                a, b = b, a
+            P1.append(a); P2.append(b)
+        p1, p2 = np.median(P1, axis=0), np.median(P2, axis=0)
+        line = {"found": True, "p1": p1, "p2": p2, "center": (p1 + p2) / 2,
+                "angle_deg": float(np.degrees(np.arctan2((p2 - p1)[1], (p2 - p1)[0]))),
+                "length_px": float(np.linalg.norm(p2 - p1))}
+    print(f"[settle] {len(fruits)}/{n} frames saw fruit, {len(lines)} saw the cut line")
+    return fruit, line, last
+
+
 def sample_depth_m(depth_u16, u, v, depth_scale, win=5):
     """Median of the nonzero depth (in metres) in a (2*win+1) window around (u,v).
     Returns None if no valid depth there."""
@@ -1097,6 +1192,7 @@ def run_plan_stitch(r, model, classes, args):
     use_robot = not (args.no_robot or args.image)
     tracker = make_tracker(args)
 
+    line = None
     if args.image:
         bgr = cv2.imread(args.image)
         if bgr is None:
@@ -1104,19 +1200,22 @@ def run_plan_stitch(r, model, classes, args):
         roi = tuple(args.roi) if args.roi else (0, 0, bgr.shape[1], bgr.shape[0])
         fruit = tracker.detect(model, bgr, classes, args.conf, roi)
     else:
-        fruit, _, bgr = grab_detection(r, model, classes, args, tracker=tracker)
+        # The apple + cut are static, so aggregate over a window for a stable
+        # best-guess (more reliable than a single frame; works best from a standoff).
+        fruit, line, bgr = settle_detect(r, model, classes, args, tracker, n=args.settle)
         if bgr is None:
             print("No color frame on Redis — is realsense_publisher.py running?",
                   file=sys.stderr); return
 
     if fruit is None:
-        print("[plan] no fruit detected — aim the camera at the fruit first.")
+        print("[plan] no fruit detected — aim the camera at the fruit (try farther back).")
         if args.show:
             cv2.imshow("stitch plan", bgr); cv2.waitKey(0); cv2.destroyAllWindows()
         return
 
     box = fruit["box"]
-    line = detect_blue_line(bgr, box, BLUE_HSV_LO, BLUE_HSV_HI)
+    if line is None:
+        line = detect_blue_line(bgr, box, BLUE_HSV_LO, BLUE_HSV_HI)
     if not line.get("found"):
         print("[plan] found the fruit but no blue cut line on it.")
         out = annotate_stitch_plan(bgr, fruit, None, [])
@@ -1316,6 +1415,9 @@ def parse_args():
                         "stubbed). No calibration needed for the overlay.")
     p.add_argument("--stitches", type=int, default=3,
                    help="number of stitch nodes to plan along the cut (default 3)")
+    p.add_argument("--settle", type=int, default=15,
+                   help="frames to aggregate for a stable cut detection (static "
+                        "apple/cut); default 15")
     return p.parse_args()
 
 

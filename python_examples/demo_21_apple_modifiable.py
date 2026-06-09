@@ -35,6 +35,10 @@ PIERCE_DEEPEN_CM = 1.0      # extra penetration at EACH push-in below, along its
 PIERCE_TIMES = [28.0, 78.0] # approx times (s) of the push-ins-from-below to deepen
                             # (nearest tip apex is used; add/remove to taste)
 
+PULL_FROM_FIRST_GRAB = True # at the top of the apple: keep the first two same-spot
+                            # grabs, CUT the little loop, and run the pull-through
+                            # from the first-grab spot instead of the drifted 3rd spot
+
 SKIP_CLAMP_EVENTS = [0, 1]  # raw clamp-transition indices to NOT actuate. 0,1 =
                             # the static first close@8.5s + open@9.2s (no motion).
                             # (events 2,3 @17-22.5s are also static if you want them too)
@@ -124,14 +128,45 @@ def main():
                 off = off + deepen_m * (1 - (i - a) / TAPER) * pd
         return off
 
+    # ---- top cleanup: cut the little loop + pull-through from the first-grab spot ----
+    flange = np.array([T[:3, 3] for T in poses])
+    keep = list(range(len(q)))
+
+    def pull_offset(i):
+        return np.zeros(3)
+
+    if PULL_FROM_FIRST_GRAB:
+        closes_all = [i for i in range(1, len(g)) if g[i] and not g[i - 1]]
+        opens_all = [i for i in range(1, len(g)) if not g[i] and g[i - 1]]
+        top = [i for i in closes_all if 33 < t[i] < 76]      # grabs at the top of the apple
+        if len(top) >= 2:
+            third = top[int(np.argmin([flange[i, 2] for i in top]))]   # lower/drifted grab = pull
+            same = [i for i in top if i != third]
+            first_grab_pos = np.median(flange[same], axis=0)
+            offset = first_grab_pos - flange[third]
+            prev_open = max([o for o in opens_all if o < third], default=third)
+            pull_end = min([o for o in opens_all if o > third], default=len(q) - 1)
+            keep = list(range(0, prev_open + 1)) + list(range(third, len(q)))  # drop the loop
+            TAPER2 = 30
+
+            def pull_offset(i, _o=offset, _t=third, _p=pull_end, _T=TAPER2):
+                if _t <= i <= _p:
+                    return _o
+                if _p < i <= _p + _T:
+                    return _o * (1 - (i - _p) / _T)
+                return np.zeros(3)
+
+            print(f"  PULL-FROM-FIRST-GRAB: cut loop wp{prev_open+1}-{third} "
+                  f"(t{t[prev_open+1]:.0f}-{t[third]:.0f}s); pull shifted "
+                  f"{np.round(offset*100,1)}cm up to the first-grab spot")
+
     adj = []
-    for i, T in enumerate(poses):
-        pos = T[:3, 3].copy() + GLOBAL_OFFSET
+    for i in keep:
+        pos = poses[i][:3, 3] + GLOBAL_OFFSET + pierce_off(i) + pull_offset(i)
         for (ts, te, off) in PHASE_OFFSETS:
             if ts <= t[i] <= te:
                 pos = pos + np.asarray(off, float)
-        pos = pos + pierce_off(i)
-        adj.append((pos, T[:3, :3]))
+        adj.append((pos, poses[i][:3, :3], i))      # carry original index for q/g/t
     if deepen_m != 0:
         for a, pd in zip(apexes, pdirs):
             print(f"  PIERCE deepen {PIERCE_DEEPEN_CM:+.1f}cm @ push-in t={t[a]:.0f}s "
@@ -169,15 +204,15 @@ def main():
 
     print(f"replaying at {args.speed}x ...")
     trans_idx = -1
-    for i in range(len(q)):
-        pos, R = adj[i]
+    prev_i = None
+    for pos, R, i in adj:
         if deepen_m != 0 and i in apexes:
             print(f"  >> pierce deepen: PEAK {PIERCE_DEEPEN_CM:+.1f}cm @t={t[i]:.0f}s (push-in)")
         r.set(K_["cpos"], json.dumps(pos.tolist()))
         r.set(K_["cori"], json.dumps(R.tolist()))
         if not args.no_nullspace:
             r.set(K_["njoint"], json.dumps(q[i].tolist()))
-        if i > 0 and g[i] != g[i - 1]:
+        if prev_i is not None and g[i] != g[prev_i]:    # transition vs previous KEPT frame
             trans_idx += 1
             act = "close" if g[i] else "open"
             if trans_idx in SKIP_CLAMP_EVENTS:
@@ -186,8 +221,14 @@ def main():
                 grip(bool(g[i]))
                 print(f"  gripper -> {'CLOSED' if g[i] else 'open'} "
                       f"[event {trans_idx}] @t={t[i]:.0f}s")
-        dt = (t[i] - t[i - 1]) if i > 0 else 0.02
+        if prev_i is None:
+            dt = 0.02
+        elif i - prev_i > 1:           # a CUT junction (loop removed) -> don't wait the gap
+            dt = 0.1
+        else:
+            dt = t[i] - t[prev_i]
         time.sleep(max(dt, 0.005) / args.speed)
+        prev_i = i
     print("playback done")
 
 

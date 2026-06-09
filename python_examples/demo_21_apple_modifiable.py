@@ -27,10 +27,13 @@ from playback_smooth import trim_pauses, moving_average
 
 
 # ============================ CONTROLS (edit me) ============================
-GLOBAL_OFFSET = np.array([0.0, 0.0, -0.005])  # -0.5cm z: compensate "everything 0.5cm
-                            # taller" after a Flexiv driver crash (the driver re-zeros
-                            # slightly differently on restart -- NOT a script bug; retune
-                            # this z if it crashes again / set 0 if it re-homes correctly)
+GLOBAL_OFFSET = np.array([0.0, 0.0, -0.020])  # -2cm z: even the unmodified original
+                            # playback runs ~2cm (closed) / ~3cm (open) too HIGH above the
+                            # fruit after the Flexiv driver crash re-zeroed the base frame.
+                            # This is a global shift on EVERYTHING (not the script). Lowers
+                            # uniformly. Retune if the driver crashes again / set 0 if it
+                            # re-homes correctly. (If the BOTTOM pierce ends up too low after
+                            # this, the shift wasn't uniform -- tell me and we go per-phase.)
 
 PIERCE_DEEPEN_CM = 2.0      # extra penetration at EACH push-in below. More = harder push
                             # (cartesian position control under-penetrates contact). 0=off.

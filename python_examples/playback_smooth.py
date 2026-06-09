@@ -62,6 +62,10 @@ def main():
     ap.add_argument("demo")
     ap.add_argument("--speed", type=float, default=1.0)
     ap.add_argument("--raw", action="store_true", help="replay raw (no smoothing)")
+    ap.add_argument("--init-grip", action="store_true",
+                    help="force the gripper to the demo's initial state at start. "
+                         "Default: leave it AS-IS (so a pre-loaded needle isn't dropped) "
+                         "and only actuate at recorded transitions.")
     ap.add_argument("--robot", default=None, help='override; defaults to the robot the demo was recorded on')
     args = ap.parse_args()
 
@@ -87,7 +91,12 @@ def main():
             r.set(K["nkin"], "0")
 
     print(f"replaying at {args.speed}x ...")
-    grip(bool(g[0]))
+    if args.init_grip:
+        grip(bool(g[0]))
+        print(f"  gripper -> {'CLOSED' if g[0] else 'open'} (initial state from demo)")
+    else:
+        print("  leaving gripper AS-IS at start (use --init-grip to force the demo's "
+              "initial state)")
     for i in range(len(q)):
         r.set(K["jgoal"], json.dumps(q[i].tolist()))
         if i > 0 and g[i] != g[i-1]:

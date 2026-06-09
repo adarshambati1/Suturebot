@@ -29,7 +29,7 @@ from playback_smooth import trim_pauses, moving_average
 # ============================ CONTROLS (edit me) ============================
 GLOBAL_OFFSET = np.array([0.0, 0.0, 0.0])   # world xyz shift on EVERY waypoint (m)
 
-PIERCE_DEEPEN_CM = 1.0      # extra penetration at EACH push-in below, along its own
+PIERCE_DEEPEN_CM = 2.0      # extra penetration at EACH push-in below, along its own
                             # pierce direction. More = harder push (cartesian position
                             # control under-penetrates against contact). 0 = off.
 PIERCE_TIMES = [28.0, 78.0] # approx times (s) of the push-ins-from-below to deepen

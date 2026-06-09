@@ -44,6 +44,11 @@ def parse_args():
     p.add_argument("--show-proj", action="store_true",
                    help="draw the calibration-projected needle tip (red x); off by "
                         "default since it's unreliable across re-grips")
+    p.add_argument("--needle-debug", action="store_true",
+                   help="show the dark mask the needle detector sees (to tune --dark-v)")
+    p.add_argument("--dark-v", type=int, default=90,
+                   help="needle darkness threshold (lower = only very dark pixels; "
+                        "raise until the needle shows but the apple doesn't)")
     return p.parse_args()
 
 
@@ -109,11 +114,20 @@ def main():
                 p1 = tuple(np.round(strip["p1"]).astype(int))
                 p2 = tuple(np.round(strip["p2"]).astype(int))
                 cv2.line(out, p1, p2, (255, 120, 0), 1)
-            nd = fs.detect_needle_darkline(bgr, line=strip, box=fruit["box"]) \
-                if fruit is not None else {"found": False}
+            nd, dmask = ({"found": False}, None)
+            if fruit is not None:
+                nd, dmask = fs.detect_needle_darkline(
+                    bgr, line=strip, box=fruit["box"], dark_v=args.dark_v, return_mask=True)
             if nd.get("found"):
                 cv2.line(out, nd["p1"], nd["p2"], (0, 255, 0), 2)
                 cv2.circle(out, nd["cross"], 5, (0, 255, 0), -1)
+            if args.needle_debug and dmask is not None:
+                # show the dark mask (what the detector sees) in the corner
+                dm = cv2.cvtColor(dmask, cv2.COLOR_GRAY2BGR)
+                dh, dw = dm.shape[:2]
+                sc = min(220 / max(dw, 1), 220 / max(dh, 1), 1.0)
+                dm = cv2.resize(dm, (int(dw * sc), int(dh * sc)))
+                out[h - dm.shape[0]:h, w - dm.shape[1]:w] = dm
             hud = (f"{fruit['label']} {fruit['conf']:.2f}" if fruit is not None else "no fruit")
             hud += f"  cut:{'Y' if strip and strip.get('found') else 'n'}"
             hud += f"  needle:{'Y' if nd.get('found') else 'n'}"

@@ -397,11 +397,13 @@ def _seg_intersect(p1, p2, p3, p4):
     return None
 
 
-def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=90):
+def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=90,
+                           return_mask=False):
     """Find the needle as a dark thin line. Search region is a band around the
     blue cut line if given, else the fruit box. Returns {found, cross, p1, p2}
     in full-image pixels (cross = where it crosses the cut, or the segment
     midpoint if no cut line), or {found: False}."""
+    fail = ({"found": False}, None) if return_mask else {"found": False}
     have_line = bool(line and line.get("found"))
     if have_line:
         bp1, bp2 = np.asarray(line["p1"]), np.asarray(line["p2"])
@@ -413,43 +415,46 @@ def detect_needle_darkline(bgr, line=None, box=None, band=45, dark_v=90):
         x0, y0, x1, y1 = (max(int(box[0]), 0), max(int(box[1]), 0),
                           min(int(box[2]), bgr.shape[1]), min(int(box[3]), bgr.shape[0]))
     else:
-        return {"found": False}
+        return fail
     if x1 <= x0 or y1 <= y0:
-        return {"found": False}
+        return fail
     crop = bgr[y0:y1, x0:x1]
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     blue = cv2.dilate(cv2.inRange(hsv, BLUE_HSV_LO, BLUE_HSV_HI),
                       np.ones((5, 5), np.uint8))
-    dark = ((gray < dark_v).astype(np.uint8) * 255)
-    dark = cv2.bitwise_and(dark, cv2.bitwise_not(blue))   # drop the blue line itself
-    edges = cv2.Canny(dark, 30, 100)
-    segs = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=18,
-                           minLineLength=15, maxLineGap=8)
-    if segs is None:
-        return {"found": False}
-    off = np.array([x0, y0])
-    best, best_len = None, 0
-    if have_line:
-        b1, b2 = bp1 - off, bp2 - off
-    for s in segs[:, 0, :]:
-        a, b = np.array([s[0], s[1]]), np.array([s[2], s[3]])
-        if have_line:
-            c = _seg_intersect(a, b, b1, b2)   # must cross the cut
-            if c is None:
-                continue
-        else:
-            c = (a + b) / 2.0                   # no cut line: use segment midpoint
-        ln = np.linalg.norm(b - a)
-        if ln > best_len:
-            best_len, best = ln, (a, b, c)
+    dark = (gray < dark_v).astype(np.uint8) * 255
+    dark = cv2.bitwise_and(dark, cv2.bitwise_not(blue))   # drop the blue cut itself
+    dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    # The needle is the longest, thinnest (most elongated) dark blob — not the
+    # round stem/spots. Pick the dark contour with the best length*elongation.
+    cnts, _ = cv2.findContours(dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best, best_score = None, 0.0
+    for c in cnts:
+        if cv2.contourArea(c) < 8:
+            continue
+        (rcx, rcy), (rw, rh), ang = cv2.minAreaRect(c)
+        L, W = max(rw, rh), max(min(rw, rh), 1.0)
+        if L < 12 or L / W < 2.5:               # too short or not elongated
+            continue
+        score = L * (L / W)                      # favour long AND thin
+        if score > best_score:
+            theta = np.deg2rad(ang if rw >= rh else ang + 90)
+            d = np.array([np.cos(theta), np.sin(theta)])
+            best_score = score
+            best = (np.array([rcx, rcy]) - d * L / 2, np.array([rcx, rcy]) + d * L / 2)
     if best is None:
-        return {"found": False}
-    a, b, c = best
-    return {"found": True,
-            "cross": tuple((c + off).astype(int)),
-            "p1": tuple((a + off).astype(int)),
-            "p2": tuple((b + off).astype(int))}
+        return ({"found": False}, dark) if return_mask else {"found": False}  # noqa
+    off = np.array([x0, y0])
+    a, b = best[0] + off, best[1] + off
+    if have_line:
+        c = _seg_intersect(a, b, bp1, bp2)
+        cross = c if c is not None else (a + b) / 2.0
+    else:
+        cross = (a + b) / 2.0
+    res = {"found": True, "cross": tuple(np.round(cross).astype(int)),
+           "p1": tuple(np.round(a).astype(int)), "p2": tuple(np.round(b).astype(int))}
+    return (res, dark) if return_mask else res
 
 
 def settle_detect(r, model, classes, args, tracker, n=15, delay=0.08):

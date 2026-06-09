@@ -27,13 +27,19 @@ from playback_smooth import trim_pauses, moving_average
 
 
 # ============================ CONTROLS (edit me) ============================
-GLOBAL_OFFSET = np.array([0.0, 0.0, 0.0])   # world xyz shift on EVERY waypoint (m)
+GLOBAL_OFFSET = np.array([0.0, 0.0, -0.005])  # -0.5cm z: compensate "everything 0.5cm
+                            # taller" after a Flexiv driver crash (the driver re-zeros
+                            # slightly differently on restart -- NOT a script bug; retune
+                            # this z if it crashes again / set 0 if it re-homes correctly)
 
-PIERCE_DEEPEN_CM = 2.0      # extra penetration at EACH push-in below, along its own
-                            # pierce direction. More = harder push (cartesian position
-                            # control under-penetrates against contact). 0 = off.
+PIERCE_DEEPEN_CM = 2.0      # extra penetration at EACH push-in below. More = harder push
+                            # (cartesian position control under-penetrates contact). 0=off.
 PIERCE_TIMES = [28.0, 78.0] # approx times (s) of the push-ins-from-below to deepen
-                            # (nearest tip apex is used; add/remove to taste)
+PIERCE_PUSH_VERTICAL = True # push the deepen straight UP into the apple (+z) instead of
+                            # along the recorded plunge -- pierce1's plunge was 40% lateral,
+                            # wasting the overshoot; +z puts the full 2cm deeper
+RELAX_NULLSPACE_IN_PIERCE = True  # drop the nullspace joint pin during the pierce HOLD so
+                            # it stops biasing the arm back to the un-offset (shallower) pose
 
 CUT_TOP_LOOP = True         # at the top of the apple: keep the same-spot grabs but
                             # cut the little loop before the pull-through
@@ -42,11 +48,14 @@ PULL_REBASE = False         # also shift the pull grab to the first-grab spot. O
                             # jaws up closed ABOVE the needle (missed) -> grab where
                             # the needle actually is (the demo's original 3rd spot)
 
-RAISE_TOP_REGRIP_CM = 0.25  # lift these regrips this much (+z) so the jaws stop
-                            # biting ~1/4cm into the apple. 0 = off.
-RAISE_REGRIP_TIMES = [56.0, 104.0]  # the LAST on-top grab of each pierce (s); snapped
-                            # to the nearest grab. pierce1 ~56s (wp131); pierce2 ~104s
-                            # (best guess -- tell me the real time if it's wrong)
+RAISE_TOP_REGRIP_CM = 0.4   # lift these regrips this much (+z) so the jaws stop biting
+                            # into the apple (was 0.25 -- too small). 0 = off.
+RAISE_REGRIP_TIMES = [56.0, 104.0]  # the last on-top grab of each pierce (s); snapped to
+                            # the nearest grab. pierce1 ~56s (wp131); pierce2 ~104s
+
+GRIP12_X_BACK_CM = 1.0      # pull stitch-1 grips 1&2 (catch ~36s + regrip ~51s) BACK in -x
+                            # by this much -- less far forward, but NOT onto the pierce plane
+                            # (which is ~1.7cm back); keeps fruit clearance. 0 = off.
 
 SKIP_CLAMP_EVENTS = [0, 1]  # raw clamp-transition indices to NOT actuate. 0,1 =
                             # the static first close@8.5s + open@9.2s (no motion).
@@ -121,12 +130,19 @@ def main():
     apexes = [nearest_apex(tt) for tt in PIERCE_TIMES]
     pdirs = []
     for a in apexes:
-        v = tips[a] - tips[max(0, a - 25)]           # this push-in's penetration dir
-        nv = np.linalg.norm(v)
-        pdirs.append(v / nv if nv > 1e-6 else np.zeros(3))
-    # ramp in over the rise, HOLD at max so the controller actually pushes the
-    # extra cm in against the apple (a 1-frame peak never gets realized), taper after
-    RAMP, HOLD, TAPER = 20, 20, 12
+        if PIERCE_PUSH_VERTICAL:
+            pdirs.append(np.array([0.0, 0.0, 1.0]))    # full push straight up into the apple
+        else:
+            v = tips[a] - tips[max(0, a - 25)]         # recorded plunge (40% lateral on p1)
+            nv = np.linalg.norm(v)
+            pdirs.append(v / nv if nv > 1e-6 else np.zeros(3))
+    # ramp in over the rise, HOLD at max so the controller actually pushes in; TAPER so
+    # pierce_off decays to 0 BEFORE the catch grab (HOLD+TAPER=24: apex84 -> ends wp108 <
+    # catch wp109), otherwise the leftover push drives the jaws into the apple at the grab.
+    RAMP, HOLD, TAPER = 20, 16, 8
+
+    def in_pierce_hold(i):
+        return any(a <= i < a + HOLD for a in apexes)
 
     def pierce_off(i):
         off = np.zeros(3)
@@ -167,6 +183,20 @@ def main():
     def pull_offset(i):
         return np.zeros(3)
 
+    # ---- pull stitch-1 grips 1&2 back in -x (less forward; keep fruit clearance) ----
+    gx_m = GRIP12_X_BACK_CM / 100.0
+
+    def grip_off(i):
+        # time-windowed so it covers the catch (~36s) + first regrip (~51s) but NOT the
+        # 3rd grab (~56s); 1.5s taper in/out to avoid a step.
+        if gx_m == 0:
+            return np.zeros(3)
+        lo, hi, tp = 34.5, 54.0, 1.5
+        if lo <= t[i] <= hi:
+            f = max(0.0, min((t[i] - lo) / tp, (hi - t[i]) / tp, 1.0))
+            return np.array([-gx_m * f, 0.0, 0.0])
+        return np.zeros(3)
+
     if CUT_TOP_LOOP:
         top = [i for i in closes_all if 33 < t[i] < 76]      # grabs at the top of the apple
         if len(top) >= 2:
@@ -193,7 +223,8 @@ def main():
 
     adj = []
     for i in keep:
-        pos = poses[i][:3, 3] + GLOBAL_OFFSET + pierce_off(i) + pull_offset(i) + raise_off(i)
+        pos = (poses[i][:3, 3] + GLOBAL_OFFSET + pierce_off(i) + pull_offset(i)
+               + raise_off(i) + grip_off(i))
         for (ts, te, off) in PHASE_OFFSETS:
             if ts <= t[i] <= te:
                 pos = pos + np.asarray(off, float)
@@ -207,6 +238,15 @@ def main():
     if raise_m != 0 and raise_grabs:
         print(f"  RAISE regrips +{RAISE_TOP_REGRIP_CM}cm (+z) at " +
               ", ".join(f"t={t[c]:.0f}s(wp{c})" for c in raise_grabs))
+    if gx_m != 0:
+        print(f"  GRIP12 back -{GRIP12_X_BACK_CM}cm (-x) over t=34.5-54s (grips 1&2, "
+              "keeps clearance, not on the pierce plane)")
+    if PIERCE_PUSH_VERTICAL:
+        print("  PIERCE push = vertical (+z), full overshoot goes deeper")
+    if RELAX_NULLSPACE_IN_PIERCE:
+        print("  NULLSPACE relaxed during pierce HOLD (lets the overshoot through)")
+    if not np.allclose(GLOBAL_OFFSET, 0):
+        print(f"  GLOBAL_OFFSET {np.round(GLOBAL_OFFSET*100,1)}cm (driver re-zero comp)")
 
     r = redis.Redis(host=args.host, port=args.port)
     r.ping()
@@ -244,7 +284,9 @@ def main():
             print(f"  >> pierce deepen: PEAK {PIERCE_DEEPEN_CM:+.1f}cm @t={t[i]:.0f}s (push-in)")
         r.set(K_["cpos"], json.dumps(pos.tolist()))
         r.set(K_["cori"], json.dumps(R.tolist()))
-        if not args.no_nullspace:
+        # skip the nullspace pin during the pierce HOLD: pinning to the un-offset demo
+        # config biases the arm to under-penetrate the very overshoot we're commanding.
+        if not args.no_nullspace and not (RELAX_NULLSPACE_IN_PIERCE and in_pierce_hold(i)):
             r.set(K_["njoint"], json.dumps(q[i].tolist()))
         if prev_i is not None and g[i] != g[prev_i]:    # transition vs previous KEPT frame
             trans_idx += 1

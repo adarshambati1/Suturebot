@@ -27,7 +27,7 @@ from playback_smooth import trim_pauses, moving_average
 
 
 # ============================ CONTROLS (edit me) ============================
-GLOBAL_OFFSET = np.array([0.0, 0.0, -0.020])  # -2cm z: even the unmodified original
+GLOBAL_OFFSET = np.array([0.0, 0.0, -0.025])  # -2.5cm z: even the unmodified original
                             # playback runs ~2cm (closed) / ~3cm (open) too HIGH above the
                             # fruit after the Flexiv driver crash re-zeroed the base frame.
                             # This is a global shift on EVERYTHING (not the script). Lowers

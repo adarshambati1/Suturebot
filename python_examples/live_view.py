@@ -10,6 +10,10 @@ Overlays (all optional):
   * fruit box + label (YOLO + colour tracker)
   * blue cut line
   * projected NEEDLE TIP (from the calibration) — where the needle is in view
+  * apple WORLD xyz — deprojected via depth + T_FLANGE_CAM + live flange pose;
+    FREEZES once the apple locks + the reading is stable (validates the
+    camera->robot calibration). Press 'r' to re-acquire. Needs the controller
+    running (for the flange pose) + the depth feed.
   * frame-age HUD (climbs if the publisher stalls)
 
     python3 python_examples/live_view.py                      # full overlay
@@ -117,6 +121,8 @@ def main():
     print("[live] press q/Esc to quit.")
     classes = set(args.classes)
     needle_hist = deque(maxlen=args.needle_window)
+    world_hist = deque(maxlen=args.needle_window)
+    world_locked = None      # latched apple world XYZ once found + stable
     while True:
         bgr, ts = fs.read_color(r)
         if bgr is None:
@@ -150,8 +156,39 @@ def main():
                 sc = min(220 / max(dw, 1), 220 / max(dh, 1), 1.0)
                 dm = cv2.resize(dm, (int(dw * sc), int(dh * sc)))
                 out[h - dm.shape[0]:h, w - dm.shape[1]:w] = dm
+
+            # --- apple in WORLD coords (validates the camera->robot calibration) ---
+            # Deproject the apple centre through live depth + the loaded
+            # T_FLANGE_CAM + the live flange pose. Uses the same robust locked
+            # detection (not a one-shot photo) and a rolling median for stability.
+            # Once the apple is LOCKed and the reading is stable, FREEZE it.
+            if world_locked is None and fruit is not None and intr is not None:
+                depth, _ = fs.read_depth(r)
+                fpos, fori = fs.read_actual_pose(r)
+                if depth is not None and fpos is not None:
+                    ds = intr.get("depth_scale", 0.001)
+                    z = fs.sample_depth_m(depth, int(fruit["cx"]), int(fruit["cy"]), ds, win=9)
+                    if z is not None:
+                        pc = fs.deproject(fruit["cx"], fruit["cy"], z, intr)
+                        world_hist.append(fs.cam_to_world(pc, fpos, fori))
+                wc = needle_consensus(world_hist)        # rolling median (3D ok)
+                if wc is not None and tracker.locked is not None:
+                    world_locked = wc                    # latch: apple found + stable
+                    print(f"[world] apple FROZEN at world "
+                          f"({world_locked[0]:+.4f}, {world_locked[1]:+.4f}, "
+                          f"{world_locked[2]:+.4f}) m  -- tape-measure this.")
+            world_show = world_locked if world_locked is not None else needle_consensus(world_hist)
+            if world_show is not None:
+                tag = "FROZEN" if world_locked is not None else "live"
+                cv2.putText(out, f"world {tag} "
+                            f"({world_show[0]:+.3f},{world_show[1]:+.3f},{world_show[2]:+.3f})m",
+                            (8, h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                            (0, 255, 0) if world_locked is not None else (0, 220, 220),
+                            2, cv2.LINE_AA)
+
             hud = (f"{fruit['label']} {fruit['conf']:.2f}" if fruit is not None else "no fruit")
             hud += "  LOCK" if tracker.locked is not None else ""
+            hud += "  WFROZEN" if world_locked is not None else ""
             hud += f"  cut:{'Y' if strip and strip.get('found') else 'n'}"
             hud += f"  needle:{'Y' if cons is not None else 'n'}"
         else:
@@ -173,8 +210,16 @@ def main():
         cv2.putText(out, hud, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                     (0, 255, 255), 1, cv2.LINE_AA)
         cv2.imshow(win, out)
-        if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord("q"), 27):
             break
+        if key == ord("r"):                 # re-acquire: clear the apple + world freeze
+            world_locked = None
+            world_hist.clear()
+            if not args.raw:
+                tracker.locked = None
+                tracker.last = None
+            print("[live] re-acquiring (cleared apple lock + world freeze).")
     cv2.destroyAllWindows()
 
 

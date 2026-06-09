@@ -52,11 +52,11 @@ RAISE_TOP_REGRIP_CM = 0.0   # OFF -- the real problem isn't a 1/4cm bite, it's a
                             # SCOOP (flange dips down then up at the grab). See DESCOOP.
 RAISE_REGRIP_TIMES = [56.0, 104.0]
 
-DESCOOP_WINDOWS = [(62.0, 72.0), (99.0, 108.0)]  # flatten the flange-z DIP (scoop) in
-                            # these time windows: stitch-1 last/3rd regrip, and the last
-                            # stitch's grip. z is lifted up to the straight line across the
-                            # window so the arm goes across instead of plunging down.
-                            # (add (84,99) if stitch-2's grip A also scoops too much)
+DESCOOP_WINDOWS = [(62.0, 72.0), (99.0, 108.0)]  # flatten the flange-z DIP (scoop) here:
+                            # stitch-1 last/3rd regrip + the last stitch's grip.
+DESCOOP_STRENGTH = 0.5      # how much of the dip to remove. 1.0 = flatten fully to the
+                            # line (grips HIGH, at the approach height -- too high); lower
+                            # keeps more of the necessary reach-down to the needle. Tune.
 
 GRIP12_X_BACK_CM = 1.0      # pull stitch-1 grips 1&2 (catch ~36s + regrip ~51s) BACK in -x
                             # by this much -- less far forward, but NOT onto the pierce plane
@@ -215,7 +215,7 @@ def main():
             if lo <= i <= hi:
                 base = zlo + (zhi - zlo) * (i - lo) / (hi - lo)   # straight line across
                 if flange[i, 2] < base:
-                    return np.array([0.0, 0.0, base - flange[i, 2]])  # fill the dip
+                    return np.array([0.0, 0.0, DESCOOP_STRENGTH * (base - flange[i, 2])])
         return np.zeros(3)
 
     if CUT_TOP_LOOP:

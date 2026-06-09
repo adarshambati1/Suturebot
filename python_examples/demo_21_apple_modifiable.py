@@ -27,7 +27,7 @@ from playback_smooth import trim_pauses, moving_average
 
 
 # ============================ CONTROLS (edit me) ============================
-GLOBAL_OFFSET = np.array([0.0, 0.0, 0.0005])  # +0.05cm z (as requested)
+GLOBAL_OFFSET = np.array([0.0, 0.0, 0.002])   # +2mm z
 
 PIERCE_DEEPEN_CM = [2.0, 0.0]  # PER-PIERCE extra +z force overshoot (pierce1, pierce2).
                             # p1=2 (force only now -- no global to overcome). p2=0; re-eval

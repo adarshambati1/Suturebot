@@ -29,9 +29,11 @@ from playback_smooth import trim_pauses, moving_average
 # ============================ CONTROLS (edit me) ============================
 GLOBAL_OFFSET = np.array([0.0, 0.0, 0.002])   # +2mm z
 
-PIERCE_DEEPEN_CM = [2.0, 0.0]  # PER-PIERCE extra +z force overshoot (pierce1, pierce2).
-                            # p1=2 (force only now -- no global to overcome). p2=0; re-eval
-                            # pierce2 fresh now that the driver's normal. (scalar also works)
+PIERCE_DEEPEN_CM = [2.0, 5.3]  # PER-PIERCE extra +z (pierce1, pierce2). p2=5.3 puts the
+                            # 2nd pierce at the SAME commanded z as the 1st: the demo has
+                            # pierce2 3.3cm lower (tip 0.532 vs 0.565), + 2 to match p1's
+                            # overshoot -> both reach tip-z ~0.585. (use 3.3 to match p1's
+                            # demo level instead of its overshot level)
 PIERCE_TIMES = [28.0, 99.0] # push-in times: pierce1 ~28s, pierce2 ~99s. (t78 was MIS-
                             # tagged: that's stitch-1's pull-THROUGH, not a pierce -- left out)
 PIERCE_PUSH_VERTICAL = True # push the deepen straight UP into the apple (+z) instead of

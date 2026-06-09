@@ -63,11 +63,15 @@ def needle_tip(nd, fruit):
     return p1 if np.linalg.norm(p1 - ctr) < np.linalg.norm(p2 - ctr) else p2
 
 
-def detect_needle_world(r, model, tracker, intr, dark_v, conf, n=15, delay=0.06):
+def detect_needle_world(r, model, tracker, intr, dark_v, conf, n=15, delay=0.06,
+                        show=False, win_label=""):
     """At the current (stopped) pose, detect the needle tip and deproject it to
     world. Returns the median world XYZ over n frames, or None if not seen
     reliably. Pose comes from FK of the live joints (consistent with the
-    joint-space player, no dependence on cartesian keys)."""
+    joint-space player, no dependence on cartesian keys).
+
+    show=True pops a window for each frame (apple box + green needle dot + dark
+    mask) so you can WATCH it find / miss the needle at this regrip."""
     if intr is None:
         return None
     cur = r.get(keys_cache["qsens"])
@@ -76,6 +80,8 @@ def detect_needle_world(r, model, tracker, intr, dark_v, conf, n=15, delay=0.06)
     Tf = K.fk_flange(np.array(json.loads(cur)))
     fpos, fori = Tf[:3, 3], Tf[:3, :3]
     ds = intr.get("depth_scale", 0.001)
+    if show:
+        import cv2
     pts = []
     for _ in range(n):
         bgr, _ = fs.read_color(r)
@@ -83,21 +89,37 @@ def detect_needle_world(r, model, tracker, intr, dark_v, conf, n=15, delay=0.06)
             time.sleep(delay); continue
         h, w = bgr.shape[:2]
         fruit = tracker.detect(model, bgr, classes_cache, conf, (0, 0, w, h))
-        if fruit is None:
-            time.sleep(delay); continue
-        strip = fs.detect_blue_line(bgr, fruit["box"], fs.BLUE_HSV_LO, fs.BLUE_HSV_HI)
-        nd, _ = fs.detect_needle_darkline(bgr, line=strip, box=fruit["box"],
-                                          dark_v=dark_v, return_mask=True)
-        tip = needle_tip(nd, fruit)
-        if tip is None:
-            time.sleep(delay); continue
-        depth, _ = fs.read_depth(r)
-        if depth is None:
-            time.sleep(delay); continue
-        z = fs.sample_depth_m(depth, int(tip[0]), int(tip[1]), ds, win=5)
-        if z is None:
-            time.sleep(delay); continue
-        pts.append(fs.cam_to_world(fs.deproject(tip[0], tip[1], z, intr), fpos, fori))
+        strip = tip = dmask = None
+        if fruit is not None:
+            strip = fs.detect_blue_line(bgr, fruit["box"], fs.BLUE_HSV_LO, fs.BLUE_HSV_HI)
+            nd, dmask = fs.detect_needle_darkline(bgr, line=strip, box=fruit["box"],
+                                                  dark_v=dark_v, return_mask=True)
+            tip = needle_tip(nd, fruit)
+            if tip is not None:
+                depth, _ = fs.read_depth(r)
+                if depth is not None:
+                    z = fs.sample_depth_m(depth, int(tip[0]), int(tip[1]), ds, win=5)
+                    if z is not None:
+                        pts.append(fs.cam_to_world(fs.deproject(tip[0], tip[1], z, intr),
+                                                   fpos, fori))
+        if show:
+            out = fs.annotate_stitch_plan(bgr, fruit, strip, [])
+            if tip is not None:
+                cv2.circle(out, tuple(tip.astype(int)), 7, (0, 255, 0), -1)
+                cv2.circle(out, tuple(tip.astype(int)), 9, (0, 255, 0), 2)
+            if dmask is not None:
+                dm = dmask if dmask.ndim == 3 else cv2.cvtColor(dmask, cv2.COLOR_GRAY2BGR)
+                dh, dw = dm.shape[:2]
+                sc = min(220 / max(dw, 1), 220 / max(dh, 1), 1.0)
+                dm = cv2.resize(dm, (int(dw * sc), int(dh * sc)))
+                out[h - dm.shape[0]:h, w - dm.shape[1]:w] = dm
+            found = tip is not None
+            cv2.rectangle(out, (0, 0), (w, 28), (0, 0, 0), -1)
+            cv2.putText(out, f"{win_label} needle {'FOUND' if found else '--- searching'}",
+                        (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        (0, 255, 0) if found else (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.imshow("regrip detect", out)
+            cv2.waitKey(1)
         time.sleep(delay)
     if len(pts) < max(3, n // 3):          # too few hits -> "not visible"
         return None
@@ -136,6 +158,9 @@ def main():
     ap.add_argument("--max-correction", type=float, default=0.02,
                     help="reject a vision regrip correction larger than this (m) "
                          "and fall back to the taught pose (default 0.02 = 2cm)")
+    ap.add_argument("--show", action="store_true",
+                    help="pop a camera window at each regrip so you can watch the "
+                         "detector find/miss the needle (apple box + green dot + mask)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=6379)
     args = ap.parse_args()
@@ -237,7 +262,8 @@ def main():
         # regrip: go to taught pose, STOP, detect needle world
         print(f"  [{i:2d}] REGRIP #{ri}: move to taught pose, then look")
         goto(r, K_, q_demo, move_time)
-        N_now = detect_needle_world(r, model, tracker, intr, args.dark_v, args.conf)
+        N_now = detect_needle_world(r, model, tracker, intr, args.dark_v, args.conf,
+                                    show=args.show, win_label=f"regrip #{ri}")
         if args.record_refs:
             if N_now is not None:
                 new_refs[ri] = N_now.tolist()

@@ -795,6 +795,12 @@ class FruitTracker:
     def __init__(self):
         self.h_center = None     # learned hue (OpenCV 0..179)
         self.last = None         # last (cx, cy) to disambiguate blobs
+        # Confidence lock: once YOLO sees the apple this confidently, latch that
+        # detection and reuse it for the rest of the run (the apple isn't moving,
+        # so stop re-detecting and flickering). Valid only while the camera is
+        # static -- the box is frozen in image pixels. >1 disables.
+        self.lock_conf = 0.75
+        self.locked = None
         # Discriminators against skin (skin overlaps orange/red in hue): require
         # high saturation, roundness, and proximity to the last lock.
         self.hue_tol = 12        # +/- hue band
@@ -882,10 +888,14 @@ class FruitTracker:
                 "box": (x, y, x + w, y + h), "cx": int(cx), "cy": int(cy)}
 
     def detect(self, model, bgr, classes, conf, roi):
+        if self.locked is not None:           # latched a confident apple -> reuse it
+            return dict(self.locked)
         f = detect_fruit(model, bgr, roi, classes, conf)
         if f is not None:
             self._learn(bgr, f["box"])
             self.last = (f["cx"], f["cy"])
+            if f["conf"] >= self.lock_conf:    # confident enough -> latch for the run
+                self.locked = dict(f)
             return f
         f = self._color_detect(bgr, roi)
         if f is not None:
@@ -909,6 +919,8 @@ def make_tracker(args):
     t.smin = args.color_smin
     t.hue_tol = args.color_hue_tol
     t.gate_px = args.color_gate
+    if getattr(args, "lock_conf", None) is not None:
+        t.lock_conf = args.lock_conf
     seed = resolve_seed_hue(args)
     if seed is not None:
         t.h_center = seed
@@ -1401,6 +1413,9 @@ def parse_args():
     p.add_argument("--host", default="127.0.0.1", help="Redis host (default localhost)")
     p.add_argument("--port", type=int, default=6379, help="Redis port (default 6379)")
     p.add_argument("--model", default="yolov8s.pt", help="ultralytics YOLO weights")
+    p.add_argument("--lock-conf", type=float, default=0.75,
+                   help="latch the apple once YOLO sees it at >= this confidence "
+                        "and reuse it for the run (static camera). >1 disables.")
     p.add_argument("--conf", type=float, default=0.35, help="min detection confidence")
     p.add_argument("--classes", nargs="+", default=list(DEFAULT_FRUIT_CLASSES),
                    help="fruit class names to accept")

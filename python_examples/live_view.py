@@ -58,6 +58,9 @@ def parse_args():
     p.add_argument("--robot", default="Titania")
     p.add_argument("--raw", action="store_true", help="just the stream, no detection")
     p.add_argument("--model", default="yolov8s.pt")
+    p.add_argument("--lock-conf", type=float, default=0.75,
+                   help="latch the apple once YOLO sees it at >= this confidence "
+                        "and reuse it for the run (static camera). >1 disables.")
     p.add_argument("--conf", type=float, default=0.35)
     p.add_argument("--classes", nargs="+", default=list(fs.DEFAULT_FRUIT_CLASSES))
     p.add_argument("--fruit-color", choices=list(fs.COLOR_HUES.keys()), default=None)
@@ -105,6 +108,7 @@ def main():
     if not args.raw:
         model = fs.load_model(args.model)
         tracker = fs.FruitTracker()
+        tracker.lock_conf = args.lock_conf
         if args.fruit_color:
             tracker.h_center = fs.COLOR_HUES[args.fruit_color]
 
@@ -147,6 +151,7 @@ def main():
                 dm = cv2.resize(dm, (int(dw * sc), int(dh * sc)))
                 out[h - dm.shape[0]:h, w - dm.shape[1]:w] = dm
             hud = (f"{fruit['label']} {fruit['conf']:.2f}" if fruit is not None else "no fruit")
+            hud += "  LOCK" if tracker.locked is not None else ""
             hud += f"  cut:{'Y' if strip and strip.get('found') else 'n'}"
             hud += f"  needle:{'Y' if cons is not None else 'n'}"
         else:

@@ -158,6 +158,10 @@ def main():
     trans_idx = -1
     for i in range(len(q)):
         pos, R = adj[i]
+        if deepen_m > 0 and i == max(0, push_end - RAMP_IN):
+            print(f"  >> pierce deepen: ramping in @t={t[i]:.0f}s")
+        if deepen_m > 0 and i == push_end:
+            print(f"  >> pierce deepen: PEAK +{PIERCE_DEEPEN_CM}cm @t={t[i]:.0f}s")
         r.set(K_["cpos"], json.dumps(pos.tolist()))
         r.set(K_["cori"], json.dumps(R.tolist()))
         if not args.no_nullspace:

@@ -27,8 +27,7 @@ from playback_smooth import trim_pauses, moving_average
 
 
 # ============================ CONTROLS (edit me) ============================
-GLOBAL_OFFSET = np.array([0.0, 0.0, 0.0])   # driver re-homed to normal -> no height comp
-                            # needed. (was -2.5cm while the driver was crashed/taller.)
+GLOBAL_OFFSET = np.array([0.0, 0.0, 0.0005])  # +0.05cm z (as requested)
 
 PIERCE_DEEPEN_CM = [2.0, 0.0]  # PER-PIERCE extra +z force overshoot (pierce1, pierce2).
                             # p1=2 (force only now -- no global to overcome). p2=0; re-eval

@@ -27,17 +27,14 @@ from playback_smooth import trim_pauses, moving_average
 
 
 # ============================ CONTROLS (edit me) ============================
-GLOBAL_OFFSET = np.array([0.0, 0.0, -0.025])  # -2.5cm z: even the unmodified original
-                            # playback runs ~2cm (closed) / ~3cm (open) too HIGH above the
-                            # fruit after the Flexiv driver crash re-zeroed the base frame.
-                            # This is a global shift on EVERYTHING (not the script). Lowers
-                            # uniformly. Retune if the driver crashes again / set 0 if it
-                            # re-homes correctly. (If the BOTTOM pierce ends up too low after
-                            # this, the shift wasn't uniform -- tell me and we go per-phase.)
+GLOBAL_OFFSET = np.array([0.0, 0.0, 0.0])   # driver re-homed to normal -> no height comp
+                            # needed. (was -2.5cm while the driver was crashed/taller.)
 
-PIERCE_DEEPEN_CM = 2.0      # extra penetration at EACH push-in below. More = harder push
-                            # (cartesian position control under-penetrates contact). 0=off.
-PIERCE_TIMES = [28.0, 78.0] # approx times (s) of the push-ins-from-below to deepen
+PIERCE_DEEPEN_CM = [2.0, 0.0]  # PER-PIERCE extra +z force overshoot (pierce1, pierce2).
+                            # p1=2 (force only now -- no global to overcome). p2=0; re-eval
+                            # pierce2 fresh now that the driver's normal. (scalar also works)
+PIERCE_TIMES = [28.0, 99.0] # push-in times: pierce1 ~28s, pierce2 ~99s. (t78 was MIS-
+                            # tagged: that's stitch-1's pull-THROUGH, not a pierce -- left out)
 PIERCE_PUSH_VERTICAL = True # push the deepen straight UP into the apple (+z) instead of
                             # along the recorded plunge -- pierce1's plunge was 40% lateral,
                             # wasting the overshoot; +z puts the full 2cm deeper
@@ -63,10 +60,9 @@ DESCOOP_STRENGTH = 0.5      # soften the scoop (the ~5cm plunge down to the grab
                             # global -2.5cm height is set, tune this so it grabs the needle
                             # without a dramatic dig: lower if it grabs high, raise if it digs.
 
-EVENT10_RAISE_CM = 3.5      # raise the event-10 pull grab (~t72, wp173) + pull-through
-                            # (+z). That grab is already lower than the top grips, and the
-                            # global -2.5cm over-deepened it ("WAY too deep"); this lifts it
-                            # back up. Tune. (applies t71-85 with a taper)
+EVENT10_RAISE_CM = 0.0      # was 3.5 to lift event 10 out of the over-deep caused by the
+                            # -2.5cm global; reset to 0 now the global's gone + events 9,10
+                            # are skipped (grip just holds). Re-eval if the pull dips.
 
 GRIP12_X_BACK_CM = 1.0      # pull stitch-1 grips 1&2 (catch ~36s + regrip ~51s) BACK in -x
                             # by this much -- less far forward, but NOT onto the pierce plane
@@ -78,7 +74,8 @@ SKIP_CLAMP_EVENTS = [0, 1, 9, 10]  # raw clamp-transition indices to NOT actuate
                             # both so the good grip just HOLDS through the pull (no re-grab).
 
 PHASE_OFFSETS: list = [     # per-time-window world shifts (m): (t0, t1, [dx,dy,dz])
-    # (3.0, 36.0, np.array([0.0, 0.0, -0.01])),
+    # (96.0, 102.0, np.array([0.0,0.0,-0.02])),  # re-add to lower the 2nd pierce if it's
+    #                                            # still too high now the driver's normal
 ]
 # demo_21 phases: pierce1 ~start-36s | through/regrips ~36-72s | pull ~72-97s | final ~97-114s
 # ===========================================================================
@@ -135,7 +132,10 @@ def main():
     # direction so the position controller pushes HARDER (more force) and the
     # needle seats deeper. Applied to every push-in listed in PIERCE_TIMES.
     tips = np.array([T[:3, 3] + T[:3, :3] @ K.NEEDLE_TIP_OFFSET for T in poses])
-    deepen_m = PIERCE_DEEPEN_CM / 100.0
+    # per-pierce deepen (list aligned with PIERCE_TIMES; scalar broadcasts to all)
+    _dc = PIERCE_DEEPEN_CM if isinstance(PIERCE_DEEPEN_CM, (list, tuple)) else [PIERCE_DEEPEN_CM] * len(PIERCE_TIMES)
+    deepen_list = [c / 100.0 for c in _dc]
+    any_deepen = any(abs(x) > 1e-9 for x in deepen_list)
 
     # locate each push-in: snap the requested time to the nearest tip-z apex
     def nearest_apex(tt):
@@ -162,15 +162,15 @@ def main():
 
     def pierce_off(i):
         off = np.zeros(3)
-        if deepen_m == 0:
-            return off
-        for a, pd in zip(apexes, pdirs):
+        for a, pd, dm in zip(apexes, pdirs, deepen_list):
+            if dm == 0:
+                continue
             if a - RAMP <= i < a:
-                off = off + deepen_m * (i - (a - RAMP)) / RAMP * pd
+                off = off + dm * (i - (a - RAMP)) / RAMP * pd
             elif a <= i < a + HOLD:
-                off = off + deepen_m * pd                       # HOLD at full depth
+                off = off + dm * pd                              # HOLD at full depth
             elif a + HOLD <= i <= a + HOLD + TAPER:
-                off = off + deepen_m * (1 - (i - a - HOLD) / TAPER) * pd
+                off = off + dm * (1 - (i - a - HOLD) / TAPER) * pd
         return off
 
     # ---- top cleanup: cut the little loop + pull-through from the first-grab spot ----
@@ -273,9 +273,9 @@ def main():
             if ts <= t[i] <= te:
                 pos = pos + np.asarray(off, float)
         adj.append((pos, poses[i][:3, :3], i))      # carry original index for q/g/t
-    if deepen_m != 0:
-        for a, pd in zip(apexes, pdirs):
-            print(f"  PIERCE deepen {PIERCE_DEEPEN_CM:+.1f}cm @ push-in t={t[a]:.0f}s "
+    if any_deepen:
+        for a, pd, dm in zip(apexes, pdirs, deepen_list):
+            print(f"  PIERCE deepen {dm*100:+.1f}cm @ push-in t={t[a]:.0f}s "
                   f"(wp{a}) along {np.round(pd,2)}")
     if SKIP_CLAMP_EVENTS:
         print(f"  SKIP clamp events {SKIP_CLAMP_EVENTS} (no actuation)")
@@ -328,8 +328,9 @@ def main():
     trans_idx = -1
     prev_i = None
     for pos, R, i in adj:
-        if deepen_m != 0 and i in apexes:
-            print(f"  >> pierce deepen: PEAK {PIERCE_DEEPEN_CM:+.1f}cm @t={t[i]:.0f}s (push-in)")
+        if any_deepen and i in apexes:
+            dm = deepen_list[apexes.index(i)]
+            print(f"  >> pierce deepen: PEAK {dm*100:+.1f}cm @t={t[i]:.0f}s (push-in)")
         r.set(K_["cpos"], json.dumps(pos.tolist()))
         r.set(K_["cori"], json.dumps(R.tolist()))
         # skip the nullspace pin during the pierce HOLD: pinning to the un-offset demo
